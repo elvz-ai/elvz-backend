@@ -1,0 +1,115 @@
+"""
+Application configuration using Pydantic Settings.
+Loads from environment variables with sensible defaults.
+"""
+
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import Field, RedisDsn
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+    
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+    
+    # Application
+    app_name: str = "Elvz.ai Backend"
+    app_version: str = "1.0.0"
+    debug: bool = False
+    environment: Literal["development", "staging", "production"] = "development"
+    
+    # API
+    api_v1_prefix: str = "/api/v1"
+    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8000"]
+    
+    # Database - Individual settings (recommended)
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_database: str = "elvz"
+    postgres_user: str = "postgres"
+    postgres_password: str = "postgres"
+    
+    # Database pool settings
+    database_pool_size: int = 20
+    database_max_overflow: int = 10
+    
+    @property
+    def database_url(self) -> str:
+        """Build database URL from individual components."""
+        return f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_database}"
+    
+    # Redis
+    redis_url: RedisDsn = Field(default="redis://localhost:6379/0")
+    redis_session_ttl: int = 3600  # 1 hour
+    redis_cache_ttl: int = 21600  # 6 hours
+    
+    # Celery
+    celery_broker_url: str = "redis://localhost:6379/1"
+    celery_result_backend: str = "redis://localhost:6379/1"
+    
+    # LLM Providers
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
+    google_api_key: str = ""  # Gemini API key
+    
+    # Default LLM Provider: "openai", "anthropic", or "google"
+    default_llm_provider: str = "google"
+    
+    # LLM Model Configuration
+    openai_model_primary: str = "gpt-4o"
+    openai_model_fast: str = "gpt-4o-mini"
+    anthropic_model_primary: str = "claude-3-5-sonnet-20241022"
+    google_model_primary: str = "gemini-1.5-pro-latest"
+    google_model_fast: str = "gemini-1.5-flash-latest"
+    
+    # LLM Settings
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 4096
+    llm_timeout: int = 60
+    llm_max_retries: int = 3
+    
+    # Vector Database - Pinecone
+    pinecone_api_key: str = ""
+    pinecone_environment: str = "us-east-1"
+    pinecone_index_name: str = "elvz-knowledge"
+    
+    # Vector Database - Weaviate (alternative)
+    weaviate_url: str = "http://localhost:8080"
+    weaviate_api_key: str = ""
+    
+    # Authentication
+    jwt_secret_key: str = "your-secret-key-change-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 30
+    jwt_refresh_token_expire_days: int = 7
+    
+    # Rate Limiting
+    rate_limit_requests_per_minute: int = 60
+    rate_limit_tokens_per_minute: int = 100000
+    
+    # External APIs (placeholders)
+    hashtag_api_key: str = ""
+    serp_api_key: str = ""
+    google_search_console_key: str = ""
+    
+    # Logging
+    log_level: str = "INFO"
+    log_format: Literal["json", "console"] = "console"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Get cached settings instance."""
+    return Settings()
+
+
+settings = get_settings()
+
