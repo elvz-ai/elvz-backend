@@ -103,18 +103,28 @@ class StrategyAgent:
         content_type = request.get("content_type", "thought_leadership")
         goals = request.get("goals", ["engagement"])
         
+        # Get search keywords extracted by intent classifier (LLM-generated)
+        search_keywords = request.get("search_keywords", [])
+        
         # Get user_id for filtering
         user_id = context.get("user_id")
         
         logger.info(
             "Strategy agent executing",
             platform=platform,
-            topic=topic[:50],
+            topic=topic[:50] if topic else "",
             user_id=user_id,
+            search_keywords=search_keywords,
         )
         
-        # Retrieve relevant knowledge (with user_id for personalized knowledge)
-        knowledge_context = await self._retrieve_knowledge(platform, topic, content_type, user_id)
+        # Retrieve relevant knowledge using search keywords (two-phase search)
+        knowledge_context = await self._retrieve_knowledge(
+            platform=platform,
+            topic=topic,
+            content_type=content_type,
+            user_id=user_id,
+            search_keywords=search_keywords,
+        )
         
         # Build brand context
         brand_context = self._build_brand_context(context)
@@ -138,46 +148,97 @@ class StrategyAgent:
         topic: str,
         content_type: str,
         user_id: Optional[str] = None,
+        search_keywords: Optional[list[str]] = None,
     ) -> str:
-        """Retrieve relevant knowledge from Pinecone vector store."""
+        """
+        Retrieve relevant knowledge from Pinecone using two-phase search:
+        1. First search for topic-specific content using search_keywords
+        2. Then search for platform best practices
+        """
+        all_results = []
+        
+        # Phase 1: Search for topic-specific knowledge using LLM-extracted keywords
+        if search_keywords:
+            try:
+                keyword_query = " ".join(search_keywords)
+                
+                print("\n" + "="*70)
+                print(f"🔑 PHASE 1: KEYWORD SEARCH (Strategy Agent)")
+                print(f"   Keywords: {search_keywords}")
+                print(f"   Query: {keyword_query}")
+                print(f"   User ID: {user_id}")
+                print("-"*70)
+                
+                keyword_results = await vector_store.search_knowledge(
+                    query=keyword_query,
+                    user_id=user_id,
+                    top_k=3,
+                )
+                
+                if keyword_results:
+                    print(f"   Found: {len(keyword_results)} results")
+                    for i, r in enumerate(keyword_results, 1):
+                        chunk_text = r.content or r.metadata.get("text", "N/A")
+                        print(f"   [{i}] Score: {r.score:.3f}")
+                        print(f"       Text: {chunk_text[:100]}...")
+                        print(f"       User: {r.metadata.get('user_id', 'N/A')}")
+                    all_results.extend(keyword_results)
+                else:
+                    print("   No results found for keywords")
+                print("="*70)
+                
+            except Exception as e:
+                logger.warning("Keyword search failed", error=str(e))
+        
+        # Phase 2: Search for platform best practices
         try:
-            # Search for platform best practices with user_id filter
-            query = f"Best practices for {content_type} content on {platform} about {topic}"
+            platform_query = f"Best practices for {content_type} on {platform}"
             
-            results = await vector_store.search_knowledge(
-                query=query,
-                user_id=user_id,  # Filter by user_id for personalized knowledge
+            print("\n" + "="*70)
+            print(f"📋 PHASE 2: PLATFORM BEST PRACTICES (Strategy Agent)")
+            print(f"   Query: {platform_query}")
+            print(f"   Platform: {platform}")
+            print("-"*70)
+            
+            platform_results = await vector_store.search_knowledge(
+                query=platform_query,
+                user_id=user_id,
                 platform=platform,
-                top_k=3,
+                top_k=2,
             )
             
-            if results:
-                knowledge_items = [r.content for r in results]
-                
-                # Debug: Print retrieved knowledge to terminal
-                print("\n" + "="*60)
-                print(f"📚 PINECONE KNOWLEDGE RETRIEVED (Strategy Agent)")
-                print(f"   Query: {query}")
-                print(f"   User ID: {user_id}")
-                print(f"   Platform: {platform}")
-                print(f"   Results: {len(results)}")
-                print("-"*60)
-                for i, r in enumerate(results, 1):
+            if platform_results:
+                print(f"   Found: {len(platform_results)} results")
+                for i, r in enumerate(platform_results, 1):
+                    chunk_text = r.content or r.metadata.get("text", "N/A")
                     print(f"   [{i}] Score: {r.score:.3f}")
-                    print(f"       Content: {r.content[:100]}...")
-                    print(f"       Metadata: {r.metadata}")
-                print("="*60 + "\n")
-                
-                logger.info(
-                    "Retrieved knowledge from Pinecone",
-                    count=len(results),
-                    user_id=user_id,
-                    platform=platform
-                )
-                return "\n".join(f"- {item}" for item in knowledge_items)
+                    print(f"       Text: {chunk_text[:100]}...")
+                all_results.extend(platform_results)
+            else:
+                print("   No platform results found")
+            print("="*70 + "\n")
             
         except Exception as e:
-            logger.warning("Knowledge retrieval from Pinecone failed", error=str(e))
+            logger.warning("Platform search failed", error=str(e))
+        
+        # Combine and deduplicate results
+        if all_results:
+            seen_ids = set()
+            unique_results = []
+            for r in all_results:
+                if r.id not in seen_ids:
+                    seen_ids.add(r.id)
+                    unique_results.append(r)
+            
+            knowledge_items = [r.content or r.metadata.get("text", "") for r in unique_results]
+            
+            logger.info(
+                "Retrieved knowledge from Pinecone (two-phase)",
+                keyword_results=len(search_keywords) if search_keywords else 0,
+                total_results=len(unique_results),
+                user_id=user_id,
+            )
+            return "\n".join(f"- {item}" for item in knowledge_items if item)
         
         # Fallback to embedded knowledge
         return self._get_fallback_knowledge(platform, content_type)

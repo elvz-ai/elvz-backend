@@ -125,10 +125,14 @@ class ContentGeneratorAgent:
         topic = request.get("topic", "")
         content_type = request.get("content_type", "thought_leadership")
         
+        # Get LLM-extracted search keywords
+        search_keywords = request.get("search_keywords", [])
+        
         logger.info(
             "Content generator executing",
             platform=platform,
-            topic=topic[:50],
+            topic=topic[:50] if topic else "",
+            search_keywords=search_keywords,
         )
         
         # Get user_id for filtering
@@ -137,8 +141,8 @@ class ContentGeneratorAgent:
         # Get brand voice profile (RAFT)
         brand_voice = await self._get_brand_voice(context)
         
-        # Retrieve few-shot examples (with user_id for personalized knowledge)
-        examples = await self._retrieve_examples(platform, content_type, topic, user_id)
+        # Retrieve few-shot examples (with user_id and search_keywords)
+        examples = await self._retrieve_examples(platform, content_type, topic, user_id, search_keywords)
         
         # Generate content variations
         variations = await self._generate_content(
@@ -197,49 +201,83 @@ class ContentGeneratorAgent:
         content_type: str,
         topic: str,
         user_id: Optional[str] = None,
+        search_keywords: Optional[list[str]] = None,
     ) -> str:
-        """Retrieve high-performing content examples for few-shot learning from Pinecone."""
+        """
+        Retrieve content examples using two-phase search:
+        1. Search using LLM-extracted keywords for topic-specific content
+        2. Search for platform examples
+        """
+        all_results = []
+        
+        # Phase 1: Search using keywords
+        if search_keywords:
+            try:
+                keyword_query = " ".join(search_keywords)
+                
+                print("\n" + "="*70)
+                print(f"🔑 CONTENT AGENT - KEYWORD SEARCH")
+                print(f"   Keywords: {search_keywords}")
+                print("-"*70)
+                
+                keyword_results = await vector_store.search_content_examples(
+                    query=keyword_query,
+                    user_id=user_id,
+                    top_k=2,
+                )
+                
+                if keyword_results:
+                    print(f"   Found: {len(keyword_results)} results")
+                    for i, r in enumerate(keyword_results, 1):
+                        chunk_text = r.content or r.metadata.get("text", "N/A")
+                        print(f"   [{i}] Score: {r.score:.3f} - {chunk_text[:60]}...")
+                    all_results.extend(keyword_results)
+                else:
+                    print("   No keyword results found")
+                print("="*70)
+                
+            except Exception as e:
+                logger.warning("Keyword example search failed", error=str(e))
+        
+        # Phase 2: Search for platform examples
         try:
-            query = f"High performing {content_type} post about {topic}"
+            platform_query = f"High performing {content_type} post on {platform}"
             
-            # Search with user_id to get personalized knowledge chunks
-            results = await vector_store.search_content_examples(
-                query=query,
-                user_id=user_id,  # Filter by user_id for personalized content
+            platform_results = await vector_store.search_content_examples(
+                query=platform_query,
+                user_id=user_id,
                 platform=platform,
-                min_performance=0.7,
-                top_k=3,
+                top_k=2,
             )
             
-            if results:
-                examples = []
-                for i, r in enumerate(results, 1):
-                    examples.append(f"Example {i} (from knowledge base):\n{r.content}")
+            if platform_results:
+                all_results.extend(platform_results)
                 
-                # Debug: Print retrieved examples to terminal
-                print("\n" + "="*60)
-                print(f"📝 PINECONE EXAMPLES RETRIEVED (Content Agent)")
-                print(f"   Query: {query}")
-                print(f"   User ID: {user_id}")
-                print(f"   Platform: {platform}")
-                print(f"   Results: {len(results)}")
-                print("-"*60)
-                for i, r in enumerate(results, 1):
-                    print(f"   [{i}] Score: {r.score:.3f}")
-                    print(f"       Content: {r.content[:100]}...")
-                    print(f"       Metadata: {r.metadata}")
-                print("="*60 + "\n")
-                
+        except Exception as e:
+            logger.warning("Platform example search failed", error=str(e))
+        
+        # Combine and format results
+        if all_results:
+            seen_ids = set()
+            unique_results = []
+            for r in all_results:
+                if r.id not in seen_ids:
+                    seen_ids.add(r.id)
+                    unique_results.append(r)
+            
+            examples = []
+            for i, r in enumerate(unique_results[:3], 1):
+                content = r.content or r.metadata.get("text", "")
+                if content:
+                    examples.append(f"Example {i} (from knowledge base):\n{content}")
+            
+            if examples:
                 logger.info(
                     "Retrieved examples from Pinecone",
-                    count=len(results),
+                    count=len(examples),
                     user_id=user_id,
-                    platform=platform
                 )
                 return "\n\n".join(examples)
-            
-        except Exception as e:
-            logger.warning("Example retrieval from Pinecone failed", error=str(e))
         
         # Return platform-specific example templates
         return self._get_fallback_examples(platform)

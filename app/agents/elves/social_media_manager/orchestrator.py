@@ -110,7 +110,18 @@ class SocialMediaManagerElf(BaseElf):
             "platform": request.get("platform") or entities.get("platform") or "linkedin",
             "content_type": request.get("content_type", "thought_leadership"),
             "goals": request.get("goals", ["engagement"]),
+            # LLM-extracted search keywords for vector DB lookup
+            "search_keywords": entities.get("search_keywords", []),
         }
+        
+        # Debug: Print extracted search keywords
+        if enriched_request.get("search_keywords"):
+            print("\n" + "="*70)
+            print("🎯 LLM-EXTRACTED SEARCH KEYWORDS")
+            print(f"   Keywords: {enriched_request['search_keywords']}")
+            print(f"   Topic: {enriched_request.get('topic')}")
+            print(f"   Platform: {enriched_request.get('platform')}")
+            print("="*70 + "\n")
         
         # Initialize state
         initial_state = {

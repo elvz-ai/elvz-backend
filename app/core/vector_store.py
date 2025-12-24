@@ -218,7 +218,8 @@ class PineconeVectorStore(BaseVectorStore):
         search_results = []
         for match in results.matches:
             metadata = match.metadata or {}
-            content = metadata.pop("content", "")
+            # Check both 'content' and 'text' keys (add_embeddings.py uses 'text')
+            content = metadata.pop("content", "") or metadata.get("text", "")
             search_results.append(
                 VectorSearchResult(
                     id=match.id,

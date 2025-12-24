@@ -99,9 +99,23 @@ Respond with JSON:
     "intent": "create_post|audit_site|write_blog|manage_tasks|...",
     "confidence": 0.0-1.0,
     "requires_multi_elf": true/false,
-    "extracted_entities": {{"platform": "...", "topic": "...", "url": "..."}},
+    "extracted_entities": {{
+        "platform": "linkedin/twitter/instagram/facebook or null",
+        "topic": "main topic of the request",
+        "url": "any URL mentioned or null",
+        "search_keywords": ["keyword1", "keyword2", "keyword3"]
+    }},
     "reasoning": "Brief explanation of classification"
-}}"""
+}}
+
+IMPORTANT for search_keywords:
+- Extract KEY CONCEPTS that should be looked up in a knowledge base
+- Include: proper nouns, product names, company names, brand names, specific topics
+- Do NOT include: generic words like "post", "create", "content", "write", platform names
+- These keywords will be used to search a vector database for relevant information
+- Example: "create a linkedin post on Klara AI governance" → ["Klara", "AI governance"]
+- Example: "write about machine learning trends 2025" → ["machine learning", "ML trends", "2025"]
+- Example: "post about our new product launch" → ["product launch"]"""
 
 
 class IntentClassifier:
@@ -279,6 +293,8 @@ class IntentClassifier:
         topic = self._extract_topic(message)
         if topic:
             entities["topic"] = topic
+            # Use topic as primary search keyword for quick classification
+            entities["search_keywords"] = [topic]
         
         return entities
     

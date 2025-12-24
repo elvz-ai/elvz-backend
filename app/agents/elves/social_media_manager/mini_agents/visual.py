@@ -200,18 +200,22 @@ class VisualAdvisorAgent:
                 practices = [r.content for r in results]
                 
                 # Debug: Print retrieved visual practices to terminal
-                print("\n" + "="*60)
+                print("\n" + "="*70)
                 print(f"🎨 PINECONE VISUAL PRACTICES RETRIEVED (Visual Agent)")
                 print(f"   Query: {query}")
                 print(f"   User ID: {user_id}")
                 print(f"   Platform: {platform}")
                 print(f"   Results: {len(results)}")
-                print("-"*60)
+                print("-"*70)
                 for i, r in enumerate(results, 1):
+                    # Get content from either content field or metadata.text
+                    chunk_text = r.content or r.metadata.get("text", "N/A")
                     print(f"   [{i}] Score: {r.score:.3f}")
-                    print(f"       Content: {r.content[:100]}...")
-                    print(f"       Metadata: {r.metadata}")
-                print("="*60 + "\n")
+                    print(f"       Text: {chunk_text}")
+                    print(f"       Category: {r.metadata.get('category', 'N/A')}")
+                    print(f"       User: {r.metadata.get('user_id', 'N/A')}")
+                    print()
+                print("="*70 + "\n")
                 
                 logger.info(
                     "Retrieved visual practices from Pinecone",
