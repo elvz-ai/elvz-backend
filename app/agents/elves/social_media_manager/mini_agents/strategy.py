@@ -103,28 +103,18 @@ class StrategyAgent:
         content_type = request.get("content_type", "thought_leadership")
         goals = request.get("goals", ["engagement"])
         
-        # Get search keywords extracted by intent classifier (LLM-generated)
-        search_keywords = request.get("search_keywords", [])
-        
-        # Get user_id for filtering
-        user_id = context.get("user_id")
-        
         logger.info(
             "Strategy agent executing",
             platform=platform,
             topic=topic[:50] if topic else "",
-            user_id=user_id,
-            search_keywords=search_keywords,
         )
         
-        # Retrieve relevant knowledge using search keywords (two-phase search)
-        knowledge_context = await self._retrieve_knowledge(
-            platform=platform,
-            topic=topic,
-            content_type=content_type,
-            user_id=user_id,
-            search_keywords=search_keywords,
-        )
+        # Use shared knowledge_context from orchestrator (single Pinecone query)
+        knowledge_context = state.get("knowledge_context", "")
+        
+        # Fallback to embedded knowledge if no results
+        if not knowledge_context:
+            knowledge_context = self._get_fallback_knowledge(platform, content_type)
         
         # Build brand context
         brand_context = self._build_brand_context(context)
@@ -323,6 +313,8 @@ class StrategyAgent:
             knowledge_context=knowledge_context,
             additional_context=additional_context or "None provided",
         )
+
+        logger.info("Strategy user prompt", user_prompt=user_prompt)
         
         messages = [
             LLMMessage(role="system", content=STRATEGY_SYSTEM_PROMPT),
@@ -330,6 +322,8 @@ class StrategyAgent:
         ]
         
         response = await llm_client.generate(messages, json_mode=True)
+
+        logger.info("Strategy response", response=response.content)
         
         try:
             strategy = json.loads(response.content)

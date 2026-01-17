@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.core.llm_clients import LLMMessage, llm_client
 from app.core.vector_store import vector_store
 from app.core.cache import cache
+from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
 
@@ -39,7 +40,50 @@ Your role is to generate engaging, on-brand content that resonates with the targ
 - Use inclusive language"""
 
 
-CONTENT_USER_PROMPT = """Generate social media content based on this strategy:
+CONTENT_USER_PROMPT_SIMPLE = """Generate social media content based on this strategy:
+
+## Strategy Brief
+- Tone: {tone}
+- Key Messages: {key_messages}
+- CTA Approach: {cta_approach}
+- Target Audience: {target_audience}
+
+## Request Details
+- Platform: {platform}
+- Topic: {topic}
+- Content Type: {content_type}
+
+## Brand Voice
+{brand_voice}
+
+## High-Performing Examples (for inspiration)
+{examples}
+
+Create 3 variations:
+1. Hook-focused: Attention-grabbing opening that stops the scroll
+2. Story-focused: Narrative approach with relatable scenario
+3. Value-focused: Educational/helpful content with clear takeaways
+
+Respond with valid JSON (just the content, no explanations):
+{{
+    "variations": [
+        {{
+            "version": "hook_focused",
+            "post_text": "The actual post content..."
+        }},
+        {{
+            "version": "story_focused", 
+            "post_text": "The actual post content..."
+        }},
+        {{
+            "version": "value_focused",
+            "post_text": "The actual post content..."
+        }}
+    ]
+}}"""
+
+
+CONTENT_USER_PROMPT_DETAILED = """Generate social media content based on this strategy:
 
 ## Strategy Brief
 - Tone: {tone}
@@ -125,24 +169,23 @@ class ContentGeneratorAgent:
         topic = request.get("topic", "")
         content_type = request.get("content_type", "thought_leadership")
         
-        # Get LLM-extracted search keywords
-        search_keywords = request.get("search_keywords", [])
-        
         logger.info(
             "Content generator executing",
             platform=platform,
             topic=topic[:50] if topic else "",
-            search_keywords=search_keywords,
         )
-        
-        # Get user_id for filtering
-        user_id = context.get("user_id")
         
         # Get brand voice profile (RAFT)
         brand_voice = await self._get_brand_voice(context)
         
-        # Retrieve few-shot examples (with user_id and search_keywords)
-        examples = await self._retrieve_examples(platform, content_type, topic, user_id, search_keywords)
+        # Use shared knowledge_context from orchestrator (single Pinecone query)
+        knowledge_context = state.get("knowledge_context", "")
+        
+        # Use knowledge as examples, fallback to platform examples if empty
+        if knowledge_context:
+            examples = f"Context from knowledge base:\n{knowledge_context}"
+        else:
+            examples = self._get_fallback_examples(platform)
         
         # Generate content variations
         variations = await self._generate_content(
@@ -375,7 +418,10 @@ Save this for when you need a reminder 🔖""",
     ) -> list[dict]:
         """Generate content variations using LLM."""
         
-        user_prompt = CONTENT_USER_PROMPT.format(
+        # Use simple or detailed prompt based on REASONING setting
+        prompt_template = CONTENT_USER_PROMPT_DETAILED if settings.include_reasoning else CONTENT_USER_PROMPT_SIMPLE
+        
+        user_prompt = prompt_template.format(
             tone=strategy.get("tone", "professional"),
             key_messages=", ".join(strategy.get("key_messages", [])),
             cta_approach=strategy.get("cta_approach", "engage"),
@@ -401,12 +447,16 @@ Save this for when you need a reminder 🔖""",
             # Validate and format variations
             formatted = []
             for var in variations:
+                content_dict = {
+                    "post_text": var.get("post_text", ""),
+                }
+                # Only include reasoning if setting is enabled
+                if settings.include_reasoning:
+                    content_dict["reasoning"] = var.get("reasoning", "")
+                
                 formatted.append({
                     "version": var.get("version", "variation"),
-                    "content": {
-                        "post_text": var.get("post_text", ""),
-                        "reasoning": var.get("reasoning", ""),
-                    },
+                    "content": content_dict,
                 })
             
             logger.debug("Content generated", variations=len(formatted))
@@ -419,7 +469,6 @@ Save this for when you need a reminder 🔖""",
                 "version": "default",
                 "content": {
                     "post_text": f"Check out our thoughts on {topic}! #professional",
-                    "reasoning": "Fallback content due to generation error",
                 },
             }]
 

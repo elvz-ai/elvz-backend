@@ -10,6 +10,7 @@ from typing import Any, Optional
 import structlog
 
 from app.core.llm_clients import LLMMessage, llm_client
+from app.core.config import settings
 from app.tools.registry import tool_registry
 
 logger = structlog.get_logger(__name__)
@@ -31,35 +32,30 @@ Your role is to recommend optimal posting times for maximum engagement.
 - Provide specific time recommendations with reasoning"""
 
 
-TIMING_USER_PROMPT = """Recommend optimal posting times for this content:
-
-## Current Date/Time
-Today is: {current_date}
-Current time: {current_time} {timezone}
-
-## Details
-Platform: {platform}
-Content Type: {content_type}
-Target Audience: {target_audience}
-User Timezone: {timezone}
+TIMING_USER_PROMPT_SIMPLE = """Based on the analytics data, what is the BEST time of day and day of week to post on {platform} for {content_type} content?
 
 ## Analytics/Tool Data
 {tool_results}
 
-IMPORTANT: Recommend a posting time that is IN THE FUTURE (after {current_date}). 
-Do NOT recommend dates in the past.
+Just tell me the best hour (0-23) and best days of the week. Respond with valid JSON:
+{{
+    "best_hour": 10,
+    "best_days": ["Tuesday", "Wednesday", "Thursday"],
+    "confidence": 0.0-1.0
+}}"""
+
+
+TIMING_USER_PROMPT_DETAILED = """Based on the analytics data, what is the BEST time of day and day of week to post on {platform} for {content_type} content targeting {target_audience}?
+
+## Analytics/Tool Data
+{tool_results}
 
 Respond with valid JSON:
 {{
-    "recommended_datetime": "YYYY-MM-DD HH:MM",
-    "timezone": "timezone",
-    "day_of_week": "Monday/Tuesday/etc",
-    "time_slot": "HH:MM",
+    "best_hour": 10,
+    "best_days": ["Tuesday", "Wednesday", "Thursday"],
     "confidence": 0.0-1.0,
-    "reasoning": "detailed explanation",
-    "alternative_times": [
-        {{"datetime": "YYYY-MM-DD HH:MM", "reason": "why"}}
-    ]
+    "reasoning": "why these times are optimal"
 }}"""
 
 
@@ -189,21 +185,24 @@ Note: Video content gets more reach""",
         timezone: str,
         tool_results: str,
     ) -> dict:
-        """Generate timing recommendation using LLM."""
+        """
+        Generate 3 timing recommendations:
+        1. Quick post: Within 12-24 hours
+        2. Optimal: Within 1 week (best day/time)
+        3. Alternative: Within 1 week (second best day/time)
+        """
         
         # Get current date/time
         now = datetime.utcnow()
-        current_date = now.strftime("%Y-%m-%d")
-        current_time = now.strftime("%H:%M")
         
-        user_prompt = TIMING_USER_PROMPT.format(
+        # Use simple or detailed prompt based on REASONING setting
+        prompt_template = TIMING_USER_PROMPT_DETAILED if settings.include_reasoning else TIMING_USER_PROMPT_SIMPLE
+        
+        user_prompt = prompt_template.format(
             platform=platform,
             content_type=content_type,
             target_audience=target_audience,
-            timezone=timezone,
             tool_results=tool_results,
-            current_date=current_date,
-            current_time=current_time,
         )
         
         messages = [
@@ -216,131 +215,158 @@ Note: Video content gets more reach""",
         try:
             result = json.loads(response.content)
             
-            # Get recommended datetime
-            recommended_dt_str = result.get("recommended_datetime", "")
+            best_hour = result.get("best_hour", 10)
+            best_days = result.get("best_days", ["Tuesday", "Wednesday", "Thursday"])
+            confidence = result.get("confidence", 0.8)
+            reasoning = result.get("reasoning", "") if settings.include_reasoning else ""
             
-            # Validate and fix the datetime to ensure it's in the future
-            recommended_dt = self._validate_and_fix_datetime(
-                recommended_dt_str, platform, now
+            # Generate 3 times using Python logic
+            times = self._generate_three_times(
+                now=now,
+                platform=platform,
+                best_hour=best_hour,
+                best_days=best_days,
             )
             
-            # Also fix alternative times
-            alternatives = []
-            for alt in result.get("alternative_times", []):
-                alt_dt_str = alt.get("datetime", "")
-                alt_dt = self._validate_and_fix_datetime(alt_dt_str, platform, now)
-                alternatives.append({
-                    "datetime": alt_dt.strftime("%Y-%m-%d %H:%M"),
-                    "reason": alt.get("reason", "Alternative optimal time"),
-                })
-            
+            # Build timing response with 3 options
             timing = {
-                "datetime": recommended_dt.strftime("%Y-%m-%d %H:%M"),
-                "timezone": result.get("timezone", timezone),
-                "reason": result.get("reasoning", "Optimal engagement window"),
-                "confidence": result.get("confidence", 0.8),
-                "alternatives": alternatives,
+                "options": [
+                    {
+                        "label": "Quick Post",
+                        "description": "Post within 12-24 hours",
+                        "datetime": times[0].strftime("%Y-%m-%d %H:%M"),
+                        "day_of_week": times[0].strftime("%A"),
+                    },
+                    {
+                        "label": "Optimal",
+                        "description": "Best time this week",
+                        "datetime": times[1].strftime("%Y-%m-%d %H:%M"),
+                        "day_of_week": times[1].strftime("%A"),
+                    },
+                    {
+                        "label": "Alternative",
+                        "description": "Second best time this week",
+                        "datetime": times[2].strftime("%Y-%m-%d %H:%M"),
+                        "day_of_week": times[2].strftime("%A"),
+                    },
+                ],
+                "timezone": timezone,
+                "confidence": confidence,
             }
             
-            logger.debug("Timing recommended", datetime=timing["datetime"])
+            # Add reasoning if enabled
+            if settings.include_reasoning and reasoning:
+                timing["reason"] = reasoning
+            
+            logger.debug("Timing recommended", options=len(timing["options"]))
             return timing
             
         except json.JSONDecodeError as e:
             logger.error("Timing parsing failed", error=str(e))
-            # Return fallback
-            next_best = self._get_next_best_time(platform, now)
+            # Return fallback with 3 times
+            times = self._generate_three_times(
+                now=now,
+                platform=platform,
+                best_hour=10,
+                best_days=["Tuesday", "Wednesday", "Thursday"],
+            )
             
             return {
-                "datetime": next_best.strftime("%Y-%m-%d %H:%M"),
+                "options": [
+                    {
+                        "label": "Quick Post",
+                        "description": "Post within 12-24 hours",
+                        "datetime": times[0].strftime("%Y-%m-%d %H:%M"),
+                        "day_of_week": times[0].strftime("%A"),
+                    },
+                    {
+                        "label": "Optimal",
+                        "description": "Best time this week",
+                        "datetime": times[1].strftime("%Y-%m-%d %H:%M"),
+                        "day_of_week": times[1].strftime("%A"),
+                    },
+                    {
+                        "label": "Alternative",
+                        "description": "Second best time this week",
+                        "datetime": times[2].strftime("%Y-%m-%d %H:%M"),
+                        "day_of_week": times[2].strftime("%A"),
+                    },
+                ],
                 "timezone": timezone,
-                "reason": "Default optimal time for " + platform,
                 "confidence": 0.7,
-                "alternatives": [],
             }
     
-    def _validate_and_fix_datetime(
-        self, 
-        dt_str: str, 
-        platform: str, 
-        now: datetime
-    ) -> datetime:
-        """Validate datetime string and ensure it's in the future."""
-        try:
-            # Try to parse the datetime
-            if not dt_str:
-                return self._get_next_best_time(platform, now)
-            
-            # Handle various formats
-            for fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"]:
-                try:
-                    parsed_dt = datetime.strptime(dt_str, fmt)
-                    break
-                except ValueError:
-                    continue
-            else:
-                # Could not parse, use fallback
-                return self._get_next_best_time(platform, now)
-            
-            # Check if it's in the past
-            if parsed_dt <= now:
-                # It's in the past - find next occurrence of the same day/time
-                # Extract the hour and minute
-                target_hour = parsed_dt.hour
-                target_minute = parsed_dt.minute
-                target_weekday = parsed_dt.weekday()
-                
-                # Start from tomorrow
-                next_dt = now + timedelta(days=1)
-                next_dt = next_dt.replace(
-                    hour=target_hour, 
-                    minute=target_minute, 
-                    second=0, 
-                    microsecond=0
-                )
-                
-                # Find the next occurrence of the same weekday
-                while next_dt.weekday() != target_weekday:
-                    next_dt += timedelta(days=1)
-                
-                # For LinkedIn, skip weekends
-                if platform == "linkedin":
-                    while next_dt.weekday() >= 5:
-                        next_dt += timedelta(days=1)
-                
-                return next_dt
-            
-            return parsed_dt
-            
-        except Exception as e:
-            logger.warning("Date validation failed", error=str(e), date_str=dt_str)
-            return self._get_next_best_time(platform, now)
-    
-    def _get_next_best_time(self, platform: str, from_datetime: datetime) -> datetime:
-        """Calculate next best posting time from given datetime."""
-        # Best hours by platform
-        best_hours = {
-            "linkedin": 10,  # 10 AM
-            "twitter": 12,   # 12 PM
-            "instagram": 11, # 11 AM
-            "facebook": 13,  # 1 PM
+    def _generate_three_times(
+        self,
+        now: datetime,
+        platform: str,
+        best_hour: int,
+        best_days: list[str],
+    ) -> list[datetime]:
+        """
+        Generate 3 posting times:
+        1. Within 12-24 hours (quick post)
+        2. Best day/time within 1 week (optimal)
+        3. Second best day/time within 1 week (alternative)
+        """
+        day_map = {
+            "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
+            "Friday": 4, "Saturday": 5, "Sunday": 6
         }
         
-        target_hour = best_hours.get(platform, 10)
+        # Ensure best_hour is valid
+        best_hour = max(0, min(23, best_hour))
         
-        # Find next occurrence of that hour
-        if from_datetime.hour < target_hour:
-            next_time = from_datetime.replace(
-                hour=target_hour, minute=0, second=0, microsecond=0
-            )
-        else:
-            next_time = (from_datetime + timedelta(days=1)).replace(
-                hour=target_hour, minute=0, second=0, microsecond=0
-            )
+        # --- TIME 1: Quick post (12-24 hours from now) ---
+        quick_post = now + timedelta(hours=18)  # ~18 hours from now
+        quick_post = quick_post.replace(minute=0, second=0, microsecond=0)
+        
+        # Adjust to best hour if reasonable
+        if 6 <= best_hour <= 22:
+            # If the best hour is reasonable, try to use it
+            if quick_post.hour < best_hour:
+                quick_post = quick_post.replace(hour=best_hour)
+            elif quick_post.hour > best_hour:
+                # Push to next day at best hour
+                quick_post = (quick_post + timedelta(days=1)).replace(hour=best_hour)
         
         # Skip weekends for LinkedIn
         if platform == "linkedin":
-            while next_time.weekday() >= 5:  # Saturday = 5, Sunday = 6
-                next_time += timedelta(days=1)
+            while quick_post.weekday() >= 5:
+                quick_post += timedelta(days=1)
         
-        return next_time
+        # --- TIME 2 & 3: Best times within 1 week ---
+        best_day_numbers = [day_map.get(d, 1) for d in best_days[:2] if d in day_map]
+        if not best_day_numbers:
+            best_day_numbers = [1, 2]  # Default: Tuesday, Wednesday
+        
+        optimal_times = []
+        for target_weekday in best_day_numbers:
+            # Find next occurrence of this weekday
+            days_ahead = target_weekday - now.weekday()
+            if days_ahead <= 0:  # Already passed this week
+                days_ahead += 7
+            
+            next_occurrence = now + timedelta(days=days_ahead)
+            next_occurrence = next_occurrence.replace(
+                hour=best_hour, minute=0, second=0, microsecond=0
+            )
+            
+            # Make sure it's at least 24 hours from now
+            if (next_occurrence - now).total_seconds() < 24 * 3600:
+                next_occurrence += timedelta(days=7)
+            
+            optimal_times.append(next_occurrence)
+        
+        # Sort optimal times
+        optimal_times.sort()
+        
+        # Ensure we have at least 2 optimal times
+        while len(optimal_times) < 2:
+            last_time = optimal_times[-1] if optimal_times else quick_post
+            next_time = last_time + timedelta(days=2)
+            next_time = next_time.replace(hour=best_hour, minute=0, second=0, microsecond=0)
+            optimal_times.append(next_time)
+        
+        return [quick_post, optimal_times[0], optimal_times[1]]
 

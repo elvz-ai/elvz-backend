@@ -10,6 +10,7 @@ import structlog
 
 from app.core.llm_clients import LLMMessage, llm_client
 from app.core.vector_store import vector_store
+from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
 
@@ -37,7 +38,36 @@ Your role is to recommend visual elements that complement written content.
 - Text graphics (quote cards, tips)"""
 
 
-VISUAL_USER_PROMPT = """Recommend visual content for this post:
+VISUAL_USER_PROMPT_SIMPLE = """Recommend visual content for this post:
+
+## Content Summary
+Platform: {platform}
+Topic: {topic}
+Content Type: {content_type}
+Key Messages: {key_messages}
+
+## Brand Guidelines
+{brand_guidelines}
+
+## Visual Best Practices
+{visual_practices}
+
+Recommend visual elements that will enhance engagement.
+
+Respond with valid JSON (concise, no explanations):
+{{
+    "primary_recommendation": {{
+        "type": "image/carousel/video/infographic/text_graphic",
+        "description": "brief description of recommended visual"
+    }},
+    "design_specs": {{
+        "dimensions": "recommended dimensions",
+        "color_palette": ["color1", "color2"]
+    }}
+}}"""
+
+
+VISUAL_USER_PROMPT_DETAILED = """Recommend visual content for this post:
 
 ## Content Summary
 Platform: {platform}
@@ -272,7 +302,10 @@ class VisualAdvisorAgent:
     ) -> list[dict]:
         """Generate visual recommendations using LLM."""
         
-        user_prompt = VISUAL_USER_PROMPT.format(
+        # Use simple or detailed prompt based on REASONING setting
+        prompt_template = VISUAL_USER_PROMPT_DETAILED if settings.include_reasoning else VISUAL_USER_PROMPT_SIMPLE
+        
+        user_prompt = prompt_template.format(
             platform=platform,
             topic=topic,
             content_type=content_type,
@@ -297,21 +330,25 @@ class VisualAdvisorAgent:
             # Primary recommendation
             primary = result.get("primary_recommendation", {})
             if primary:
-                recommendations.append({
+                rec = {
                     "type": primary.get("type", "image"),
                     "description": primary.get("description", ""),
-                    "rationale": primary.get("rationale", ""),
                     "is_primary": True,
-                })
+                }
+                # Only include rationale if reasoning enabled
+                if settings.include_reasoning:
+                    rec["rationale"] = primary.get("rationale", "")
+                recommendations.append(rec)
             
-            # Alternatives
-            for alt in result.get("alternative_options", [])[:2]:
-                recommendations.append({
-                    "type": alt.get("type", "image"),
-                    "description": alt.get("description", ""),
-                    "rationale": alt.get("rationale", ""),
-                    "is_primary": False,
-                })
+            # Alternatives - only if reasoning enabled
+            if settings.include_reasoning:
+                for alt in result.get("alternative_options", [])[:2]:
+                    recommendations.append({
+                        "type": alt.get("type", "image"),
+                        "description": alt.get("description", ""),
+                        "rationale": alt.get("rationale", ""),
+                        "is_primary": False,
+                    })
             
             # Add design specs to primary
             if recommendations:
@@ -319,10 +356,12 @@ class VisualAdvisorAgent:
                 recommendations[0]["specs"] = {
                     "dimensions": specs.get("dimensions") or self._get_dimensions(platform),
                     "colors": specs.get("color_palette", []),
-                    "style": specs.get("style", ""),
-                    "elements": specs.get("key_elements", []),
                 }
-                recommendations[0]["accessibility"] = result.get("accessibility_notes", "")
+                # Only include full specs if reasoning enabled
+                if settings.include_reasoning:
+                    recommendations[0]["specs"]["style"] = specs.get("style", "")
+                    recommendations[0]["specs"]["elements"] = specs.get("key_elements", [])
+                    recommendations[0]["accessibility"] = result.get("accessibility_notes", "")
             
             logger.debug("Visual recommendations generated", count=len(recommendations))
             return recommendations
@@ -333,13 +372,10 @@ class VisualAdvisorAgent:
             return [{
                 "type": "image",
                 "description": f"Professional visual related to {topic}",
-                "rationale": "Default recommendation due to generation error",
                 "is_primary": True,
                 "specs": {
                     "dimensions": self._get_dimensions(platform),
                     "colors": ["#0077B5", "#FFFFFF"],  # LinkedIn blue
-                    "style": "clean and professional",
-                    "elements": [],
                 },
             }]
     

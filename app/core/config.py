@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     llm_timeout: int = 60
     llm_max_retries: int = 3
     
+    # Output Settings
+    include_reasoning: bool = False  # If True, agents include detailed rationale/reasoning
+    
     # Vector Database - Pinecone
     pinecone_api_key: str = ""
     pinecone_environment: str = "us-east-1"

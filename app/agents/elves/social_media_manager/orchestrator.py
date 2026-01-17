@@ -23,6 +23,7 @@ from app.agents.elves.social_media_manager.mini_agents import (
     TimingOptimizerAgent,
     VisualAdvisorAgent,
 )
+from app.core.vector_store import vector_store
 
 logger = structlog.get_logger(__name__)
 
@@ -123,10 +124,17 @@ class SocialMediaManagerElf(BaseElf):
             print(f"   Platform: {enriched_request.get('platform')}")
             print("="*70 + "\n")
         
-        # Initialize state
+        # SINGLE Pinecone query - do ONCE, share with all agents
+        knowledge_context = await self._retrieve_knowledge_once(
+            search_keywords=enriched_request.get("search_keywords", []),
+            user_id=context.get("user_id"),
+        )
+        
+        # Initialize state with shared knowledge_context
         initial_state = {
             "user_request": enriched_request,
             "context": context,
+            "knowledge_context": knowledge_context,  # Shared across all agents
             "strategy": None,
             "content_variations": [],
             "hashtags": [],
@@ -200,6 +208,60 @@ class SocialMediaManagerElf(BaseElf):
         
         return cleaned if len(cleaned) > 3 else message
     
+    async def _retrieve_knowledge_once(
+        self,
+        search_keywords: list[str],
+        user_id: Optional[str] = None,
+    ) -> str:
+        """
+        Single Pinecone query - do ONCE and share results with all agents.
+        This avoids duplicate queries from strategy, content, and other agents.
+        """
+        if not search_keywords:
+            return ""
+        
+        try:
+            keyword_query = " ".join(search_keywords)
+            
+            print("\n" + "="*70)
+            print("🔍 SINGLE PINECONE QUERY (Orchestrator)")
+            print(f"   Keywords: {search_keywords}")
+            print(f"   Query: {keyword_query}")
+            print(f"   User ID: {user_id}")
+            print("-"*70)
+            
+            results = await vector_store.search_knowledge(
+                query=keyword_query,
+                user_id=user_id,
+                top_k=5,
+            )
+            
+            if results:
+                print(f"   Found: {len(results)} results")
+                for i, r in enumerate(results, 1):
+                    chunk_text = r.content or r.metadata.get("text", "N/A")
+                    print(f"   [{i}] Score: {r.score:.3f}")
+                    print(f"       Text: {chunk_text[:80]}...")
+                    print(f"       User: {r.metadata.get('user_id', 'N/A')}")
+                print("="*70 + "\n")
+                
+                # Format as context string for agents
+                knowledge_items = [
+                    r.content or r.metadata.get("text", "") 
+                    for r in results
+                ]
+                return "\n".join(f"- {item}" for item in knowledge_items if item)
+            else:
+                print("   No results found")
+                print("="*70 + "\n")
+                return ""
+                
+        except Exception as e:
+            logger.warning("Knowledge retrieval failed", error=str(e))
+            print(f"   ❌ Error: {e}")
+            print("="*70 + "\n")
+            return ""
+    
     async def _run_strategy(self, state: dict) -> dict:
         """Run strategy agent."""
         logger.debug("Running strategy agent")
@@ -217,23 +279,33 @@ class SocialMediaManagerElf(BaseElf):
         return state
     
     async def _run_parallel_agents(self, state: dict) -> dict:
-        """Run content, hashtag, timing, and visual agents in parallel."""
+        """Run content, hashtag, timing, and optionally visual agents in parallel."""
         logger.debug("Running parallel agents")
         
         context = state.get("context", {})
+        include_media = context.get("media", False)
         
-        # Run all agents in parallel
-        results = await asyncio.gather(
-            self.content_agent.execute(state, context),
-            self.hashtag_agent.execute(state, context),
-            self.timing_agent.execute(state, context),
-            self.visual_agent.execute(state, context),
-            return_exceptions=True,
-        )
+        # Build list of agents to run
+        agents_to_run = [
+            ("content", self.content_agent.execute(state, context)),
+            ("hashtags", self.hashtag_agent.execute(state, context)),
+            ("timing", self.timing_agent.execute(state, context)),
+        ]
+        
+        # Only run visual agent if media=true
+        if include_media:
+            agents_to_run.append(("visual", self.visual_agent.execute(state, context)))
+            logger.debug("Visual agent included (media=true)")
+        else:
+            logger.debug("Visual agent skipped (media=false)")
+        
+        # Run agents in parallel
+        agent_names = [a[0] for a in agents_to_run]
+        agent_tasks = [a[1] for a in agents_to_run]
+        
+        results = await asyncio.gather(*agent_tasks, return_exceptions=True)
         
         # Process results
-        agent_names = ["content", "hashtags", "timing", "visual"]
-        
         for name, result in zip(agent_names, results):
             if isinstance(result, Exception):
                 logger.error(f"{name} agent failed", error=str(result))

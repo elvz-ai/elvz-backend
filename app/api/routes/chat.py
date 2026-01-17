@@ -21,13 +21,15 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
     session_id: Optional[str] = None
     context: Optional[dict] = None
+    media: bool = Field(default=False, description="If true, visual agent will run and provide media recommendations")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "message": "Create a LinkedIn post about AI in healthcare",
                 "session_id": "abc123",
-                "context": {"brand_name": "HealthTech Co"}
+                "context": {"brand_name": "HealthTech Co"},
+                "media": True
             }
         }
 
@@ -67,12 +69,16 @@ async def chat(
     try:
         from app.agents.platform_orchestrator.orchestrator import ChatRequest as OrchestratorRequest
         
+        # Merge media flag into context
+        context = request.context or {}
+        context["media"] = request.media
+        
         result = await orchestrator.chat(
             OrchestratorRequest(
                 user_id=user_id,
                 message=request.message,
                 session_id=request.session_id,
-                context=request.context,
+                context=context,
             )
         )
         

@@ -19,6 +19,7 @@ from app.api.websocket import websocket_endpoint
 from app.core.config import settings
 from app.core.cache import cache
 from app.core.database import init_db, close_db
+from app.core.vector_store import vector_store
 
 logger = structlog.get_logger(__name__)
 
@@ -45,6 +46,13 @@ async def lifespan(app: FastAPI):
         logger.info("Database initialized")
     except Exception as e:
         logger.warning("Database initialization failed", error=str(e))
+    
+    # Pre-connect Pinecone (saves ~3 sec on first request)
+    try:
+        await vector_store.connect()
+        logger.info("Pinecone connected")
+    except Exception as e:
+        logger.warning("Pinecone connection failed (will retry on first request)", error=str(e))
     
     # Register Elves with orchestrator
     await register_elves()

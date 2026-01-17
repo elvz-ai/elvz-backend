@@ -9,6 +9,7 @@ from typing import Any, Optional
 import structlog
 
 from app.core.llm_clients import LLMMessage, llm_client
+from app.core.config import settings
 from app.tools.registry import tool_registry
 
 logger = structlog.get_logger(__name__)
@@ -36,7 +37,25 @@ For optimal results, recommend:
 - 2-3 niche hashtags for targeted audience"""
 
 
-HASHTAG_USER_PROMPT = """Research and recommend hashtags for this content:
+HASHTAG_USER_PROMPT_SIMPLE = """Research and recommend hashtags for this content:
+
+## Content Summary
+Platform: {platform}
+Topic: {topic}
+Key Messages: {key_messages}
+
+## Tool Results (Hashtag Research)
+{tool_results}
+
+Based on the tool results and the content context, recommend 5-7 optimal hashtags.
+
+Respond with valid JSON (just the list, no explanations):
+{{
+    "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+}}"""
+
+
+HASHTAG_USER_PROMPT_DETAILED = """Research and recommend hashtags for this content:
 
 ## Content Summary
 Platform: {platform}
@@ -207,7 +226,10 @@ class HashtagResearchAgent:
     ) -> list[dict]:
         """Generate hashtag recommendations using LLM."""
         
-        user_prompt = HASHTAG_USER_PROMPT.format(
+        # Use simple or detailed prompt based on REASONING setting
+        prompt_template = HASHTAG_USER_PROMPT_DETAILED if settings.include_reasoning else HASHTAG_USER_PROMPT_SIMPLE
+        
+        user_prompt = prompt_template.format(
             platform=platform,
             topic=topic,
             key_messages=", ".join(key_messages) if key_messages else "Not specified",
@@ -229,15 +251,24 @@ class HashtagResearchAgent:
             max_hashtags = self.HASHTAG_LIMITS.get(platform, 5)
             hashtags = hashtags[:max_hashtags]
             
-            # Ensure proper format
+            # Ensure proper format - handle both simple list and detailed format
             formatted = []
             for h in hashtags:
-                formatted.append({
-                    "tag": f"#{h.get('tag', '').lstrip('#')}",
-                    "volume": h.get("volume", "medium"),
-                    "relevance": h.get("relevance_score", 0.7),
-                    "rationale": h.get("rationale", ""),
-                })
+                if isinstance(h, str):
+                    # Simple format: just a string
+                    formatted.append({
+                        "tag": f"#{h.lstrip('#')}",
+                        "volume": "medium",
+                        "relevance": 0.8,
+                    })
+                else:
+                    # Detailed format: dict with properties
+                    formatted.append({
+                        "tag": f"#{h.get('tag', '').lstrip('#')}",
+                        "volume": h.get("volume", "medium"),
+                        "relevance": h.get("relevance_score", 0.7),
+                        "rationale": h.get("rationale", "") if settings.include_reasoning else "",
+                    })
             
             logger.debug("Hashtags recommended", count=len(formatted))
             return formatted
