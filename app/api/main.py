@@ -12,6 +12,7 @@ from app.api.routes import (
     assistant_router,
     chat_router,
     copywriter_router,
+    embeddings_router,
     seo_router,
     social_media_router,
 )
@@ -120,6 +121,7 @@ app.include_router(social_media_router, prefix=settings.api_v1_prefix)
 app.include_router(seo_router, prefix=settings.api_v1_prefix)
 app.include_router(copywriter_router, prefix=settings.api_v1_prefix)
 app.include_router(assistant_router, prefix=settings.api_v1_prefix)
+app.include_router(embeddings_router, prefix=settings.api_v1_prefix)
 
 
 # WebSocket endpoint
@@ -154,6 +156,7 @@ async def root() -> dict:
             "seo": f"{settings.api_v1_prefix}/elves/seo",
             "copywriter": f"{settings.api_v1_prefix}/elves/copywriter",
             "assistant": f"{settings.api_v1_prefix}/elves/assistant",
+            "embeddings": f"{settings.api_v1_prefix}/embeddings/ingest",
             "websocket": "/ws/stream/{{client_id}}",
         },
     }

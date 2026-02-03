@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     # Output Settings
     include_reasoning: bool = False  # If True, agents include detailed rationale/reasoning
     
+    # Vertex AI (Google Cloud)
+    google_cloud_project: str = ""  # GCP project ID
+    google_cloud_location: str = "us-central1"  # GCP region
+    google_application_credentials: str = "credentials/google-service-account.json"  # Path to service account JSON
+    vertex_embedding_model: str = "multimodalembedding@001"  # Multimodal embedding model
+    vertex_vector_index_endpoint: str = ""  # Vector Search index endpoint (full resource name)
+    vertex_deployed_index_id: str = ""  # Deployed index ID
+    
     # Vector Database - Pinecone
     pinecone_api_key: str = ""
     pinecone_environment: str = "us-east-1"

@@ -75,6 +75,10 @@ secrets/
 *.pem
 *.key
 
+# Google Cloud Credentials
+credentials/
+*.json
+
 # Jupyter
 .ipynb_checkpoints/
 
@@ -89,4 +93,7 @@ coverage.xml
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+
+# AI Assistant Rules (local development only)
+rules/
 
