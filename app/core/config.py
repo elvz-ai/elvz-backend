@@ -122,8 +122,11 @@ class Settings(BaseSettings):
     openrouter_site_url: str = "https://elvz.ai"
     openrouter_site_name: str = "Elvz.ai"
 
+    # Firebase
+    firebase_json_path: str = ""
+    firebase_storage_bucket: str = "elvz-testing.firebasestorage.app"
+    firebase_storage_folder: str = "elvz-agent-images"
 
-    
     # Logging
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "console"

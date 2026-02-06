@@ -18,25 +18,26 @@ from pydantic import BaseModel
 
 class TaskType(str, Enum):
     """Task types that require LLM calls."""
-    
+
     # Platform Orchestrator tasks
     INTENT_CLASSIFICATION = "intent_classification"
     RESPONSE_AGGREGATION = "response_aggregation"
-    
+
     # Social Media tasks
     CONTENT_GENERATION = "content_generation"
     HASHTAG_OPTIMIZATION = "hashtag_optimization"
     TIMING_OPTIMIZATION = "timing_optimization"
     VISUAL_DESCRIPTION = "visual_description"
-    
+    IMAGE_GENERATION = "image_generation"
+
     # SEO tasks
     SEO_ANALYSIS = "seo_analysis"
     KEYWORD_RESEARCH = "keyword_research"
-    
+
     # Copywriter tasks
     BLOG_WRITING = "blog_writing"
     AD_COPY = "ad_copy"
-    
+
     # General
     GENERAL = "general"
     FAST = "fast"
@@ -108,7 +109,16 @@ MODEL_CONFIG: dict[str, ModelConfig] = {
         temperature=0.7,
         max_tokens=1000,
     ),
-    
+
+    # --- Image Generation ---
+    # Model for generating images from text descriptions
+    TaskType.IMAGE_GENERATION: ModelConfig(
+        model="google/gemini-2.5-flash-image",
+        fallbacks=["bytedance-seed/seedream-4.5"],
+        temperature=0.7,
+        max_tokens=1000,
+    ),
+
     # --- SEO Tasks ---
     TaskType.SEO_ANALYSIS: ModelConfig(
         model="anthropic/claude-3.5-sonnet",

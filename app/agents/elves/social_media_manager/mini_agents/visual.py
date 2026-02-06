@@ -1,6 +1,6 @@
 """
-Visual Agent - Generates visual content recommendations.
-Uses Grok for description generation (image generation to be added later).
+Visual Agent - Generates visual content recommendations and images.
+Uses Grok for description generation, then Google Gemini for actual image generation.
 Simplified for speed - no RAG/Pinecone dependency.
 """
 
@@ -219,12 +219,27 @@ class VisualAgent:
                 "style": result.get("style", ""),
                 "dimensions": result.get("dimensions", default_dim),
                 "platform": platform,
-                # Placeholder for future image generation
                 "image_url": None,
                 "generation_status": "description_only",
             }
 
             logger.debug("Visual recommendation generated", type=visual_advice["type"])
+
+            # Generate actual image using the description
+            try:
+                image_result = await self._generate_image(
+                    description=visual_advice["description"],
+                    style=visual_advice["style"],
+                    dimensions=visual_advice["dimensions"],
+                )
+                if image_result:
+                    visual_advice["image_url"] = image_result.get("url")
+                    visual_advice["generation_status"] = "image_generated"
+                    logger.info("Image generated successfully", has_url=bool(image_result.get("url")))
+            except Exception as e:
+                logger.warning("Image generation failed, using description only", error=str(e))
+                # Continue with description only
+
             return visual_advice
 
         except (json.JSONDecodeError, ValueError) as e:
@@ -239,3 +254,134 @@ class VisualAgent:
                 "image_url": None,
                 "generation_status": "description_only",
             }
+
+    async def _generate_image(
+        self,
+        description: str,
+        style: str,
+        dimensions: str,
+    ) -> Optional[dict]:
+        """
+        Generate actual image using the description.
+
+        Args:
+            description: Text description of the image
+            style: Style notes for the image
+            dimensions: Target dimensions
+
+        Returns:
+            Dictionary with image URL or None if generation fails
+        """
+        try:
+            # Build the image generation prompt
+            image_prompt = f"""Generate a high-quality social media image with the following specifications:
+
+Description: {description}
+Style: {style}
+Dimensions: {dimensions}
+
+Create a visually appealing, professional image that matches this description."""
+
+            from app.core.model_config import TaskType, get_model_config
+            from app.core.config import settings
+
+            # Get model config for image generation
+            config = get_model_config(TaskType.IMAGE_GENERATION)
+
+            # Call OpenRouter directly with proper parameters for image generation
+            logger.debug("Requesting image generation", prompt_length=len(image_prompt))
+
+            # Use OpenRouter client directly to access raw response
+            openrouter_client = llm_client.openrouter.client
+
+            request_params = {
+                "model": config.model,
+                "messages": [{"role": "user", "content": image_prompt}],
+                "extra_headers": llm_client.openrouter.extra_headers,
+                "extra_body": {
+                    "models": config.fallbacks,
+                }
+            }
+
+            # Make the API call
+            response = await openrouter_client.chat.completions.create(**request_params)
+
+            # OpenRouter image generation returns images in message.images field
+            message = response.choices[0].message
+
+            # Extract base64 image from response
+            base64_image = None
+
+            # Check for images field (new OpenRouter format)
+            if hasattr(message, 'images') and message.images:
+                try:
+                    first_image = message.images[0]
+
+                    # Try different ways to access the URL (dict vs object)
+                    image_url = None
+
+                    # Method 1: Try as object attributes
+                    if hasattr(first_image, 'image_url'):
+                        image_url_obj = first_image.image_url
+                        if hasattr(image_url_obj, 'url'):
+                            image_url = image_url_obj.url
+
+                    # Method 2: Try as dictionary
+                    if not image_url and isinstance(first_image, dict):
+                        image_url = first_image.get('image_url', {}).get('url')
+
+                    # Method 3: Try direct url field
+                    if not image_url:
+                        if hasattr(first_image, 'url'):
+                            image_url = first_image.url
+                        elif isinstance(first_image, dict) and 'url' in first_image:
+                            image_url = first_image['url']
+
+                    if image_url and image_url.startswith('data:image'):
+                        base64_image = image_url
+
+                except Exception as e:
+                    logger.error("Error extracting image from images field", error=str(e))
+
+            # Fallback: check message content for URL or base64
+            if not base64_image and message.content:
+                content = message.content.strip()
+
+                # Check if response is a direct URL
+                if content.startswith("http://") or content.startswith("https://"):
+                    return {"url": content}
+
+                # Check if response is JSON with URL
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict):
+                        url = parsed.get("url") or parsed.get("image_url") or parsed.get("data", {}).get("url")
+                        if url:
+                            if url.startswith("http"):
+                                return {"url": url}
+                            elif url.startswith("data:image"):
+                                base64_image = url
+                except json.JSONDecodeError:
+                    pass
+
+                # If response is base64 without prefix
+                if not base64_image and len(content) > 100 and not content.startswith("http"):
+                    base64_image = f"data:image/png;base64,{content}"
+
+            # Upload to Firebase Storage if we have base64 data
+            if base64_image:
+                from app.core.firebase_storage import upload_base64_image
+                firebase_url = upload_base64_image(base64_image)
+                if firebase_url:
+                    logger.info("Image uploaded to Firebase Storage")
+                    return {"url": firebase_url}
+                else:
+                    logger.warning("Failed to upload to Firebase, returning base64")
+                    return {"url": base64_image}
+
+            logger.warning("Image generation returned unexpected format")
+            return None
+
+        except Exception as e:
+            logger.error("Image generation failed", error=str(e))
+            return None
