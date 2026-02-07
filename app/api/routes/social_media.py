@@ -30,7 +30,9 @@ class CreatePostRequest(BaseModel):
     brand_voice: Optional[str] = None
     goals: list[str] = Field(default=["engagement"])
     additional_context: Optional[str] = None
-    
+    image: bool = Field(default=False, description="Whether to generate image content")
+    video: bool = Field(default=False, description="Whether to generate video content")
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -38,6 +40,8 @@ class CreatePostRequest(BaseModel):
                 "topic": "The future of AI in business automation",
                 "content_type": "thought_leadership",
                 "goals": ["awareness", "engagement"],
+                "image": True,
+                "video": False,
             }
         }
 
@@ -107,7 +111,11 @@ async def create_post(
                 "goals": request.goals,
                 "additional_context": request.additional_context,
             },
-            context={"user_id": user_id},
+            context={
+                "user_id": user_id,
+                "image": request.image,
+                "video": request.video,
+            },
         )
         
         return CreatePostResponse(

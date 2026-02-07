@@ -21,15 +21,17 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
     session_id: Optional[str] = None
     context: Optional[dict] = None
-    media: bool = Field(default=False, description="If true, visual agent will run and provide media recommendations")
-    
+    image: bool = Field(default=False, description="Whether to generate image content")
+    video: bool = Field(default=False, description="Whether to generate video content")
+
     class Config:
         json_schema_extra = {
             "example": {
                 "message": "Create a LinkedIn post about AI in healthcare",
                 "session_id": "abc123",
                 "context": {"brand_name": "HealthTech Co"},
-                "media": True
+                "image": True,
+                "video": False
             }
         }
 
@@ -68,11 +70,12 @@ async def chat(
     
     try:
         from app.agents.platform_orchestrator.orchestrator import ChatRequest as OrchestratorRequest
-        
-        # Merge media flag into context
+
+        # Merge image/video flags into context
         context = request.context or {}
-        context["media"] = request.media
-        
+        context["image"] = request.image
+        context["video"] = request.video
+
         result = await orchestrator.chat(
             OrchestratorRequest(
                 user_id=user_id,

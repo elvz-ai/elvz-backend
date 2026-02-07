@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.core.cache import cache
 from app.core.database import init_db, close_db
 from app.core.vector_store import vector_store
+from app.core.firebase_storage import initialize_firebase
 
 logger = structlog.get_logger(__name__)
 
@@ -54,7 +55,14 @@ async def lifespan(app: FastAPI):
         logger.info("Pinecone connected")
     except Exception as e:
         logger.warning("Pinecone connection failed (will retry on first request)", error=str(e))
-    
+
+    # Initialize Firebase Storage
+    try:
+        initialize_firebase()
+        logger.info("Firebase Storage initialized")
+    except Exception as e:
+        logger.warning("Firebase initialization failed (will retry on first request)", error=str(e))
+
     # Register Elves with orchestrator
     await register_elves()
     

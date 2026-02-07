@@ -20,6 +20,7 @@ from app.agents.elves.social_media_manager.mini_agents import (
     ContentAgent,
     OptimizationAgent,
     PlannerAgent,
+    VideoAgent,
     VisualAgent,
 )
 
@@ -29,33 +30,35 @@ logger = structlog.get_logger(__name__)
 class SocialMediaManagerElf(BaseElf):
     """
     Social Media Manager Elf - Creates and optimizes social media content.
-    
-    Mini-Agents (4 total):
+
+    Mini-Agents (5 total):
     1. Planner Agent - Decides which agents to run (runs FIRST)
     2. Content Agent - Generates post content (runs SECOND)
     3. Optimization Agent - Generates hashtags and timing (conditional)
-    4. Visual Agent - Generates visual descriptions (conditional)
-    
+    4. Visual Agent - Generates image descriptions (conditional)
+    5. Video Agent - Generates video scripts and recommendations (conditional)
+
     Workflow Pattern:
     - Planner runs first to decide what's needed
     - Content runs second to generate the post
-    - Downstream agents (Optimization, Visual) run in parallel based on planner decision
+    - Downstream agents (Optimization, Visual, Video) run in parallel based on planner decision
     - Synthesis combines all outputs
-    
+
     Target: <10 second response time
     """
-    
+
     name = "social_media_manager"
     description = "Creates and optimizes social media content"
-    version = "3.0"
-    
+    version = "4.0"
+
     def __init__(self):
         # Initialize mini-agents
         self.planner_agent = PlannerAgent()
         self.content_agent = ContentAgent()
         self.optimization_agent = OptimizationAgent()
         self.visual_agent = VisualAgent()
-        
+        self.video_agent = VideoAgent()
+
         super().__init__()
     
     def _setup_workflow(self) -> None:
@@ -107,11 +110,12 @@ class SocialMediaManagerElf(BaseElf):
         initial_state = {
             "user_request": enriched_request,
             "context": context,
-            "plan": None,  # NEW: Planner output
+            "plan": None,  # Planner output
             "content": None,
             "hashtags": [],
             "timing": None,
             "visual_advice": None,
+            "video_advice": None,
             "final_output": None,
             "errors": [],
             "execution_trace": [],
@@ -193,21 +197,25 @@ class SocialMediaManagerElf(BaseElf):
                 "decision": {
                     "include_hashtags": state["plan"].get("include_hashtags"),
                     "include_visual": state["plan"].get("include_visual"),
+                    "include_video": state["plan"].get("include_video"),
                 },
             })
-            
+
             logger.info(
                 "Planner completed",
                 include_hashtags=state["plan"].get("include_hashtags"),
                 include_visual=state["plan"].get("include_visual"),
+                include_video=state["plan"].get("include_video"),
             )
             
         except Exception as e:
             logger.error("Planner agent failed", error=str(e))
-            # Default plan: include hashtags, visual based on media flag
+            # Default plan: include hashtags, visual based on image/video flags
+            image_requested = context.get("image", False)
+            video_requested = context.get("video", False)
             state["plan"] = {
                 "include_hashtags": True,
-                "include_visual": context.get("media", False),
+                "include_visual": image_requested or video_requested,
                 "reasoning": "Fallback due to planner error",
             }
             state["errors"].append(f"planner: {str(e)}")
@@ -220,36 +228,55 @@ class SocialMediaManagerElf(BaseElf):
         return state
     
     async def _run_parallel_agents(self, state: dict) -> dict:
-        """Run Content, Optimization, and Visual agents in parallel based on planner decision."""
+        """Run Content, Optimization, Visual, and Video agents in parallel based on planner decision."""
         plan = state.get("plan") or {}
         context = state.get("context") or {}
-        
+
         include_hashtags = plan.get("include_hashtags", True)
-        include_visual = plan.get("include_visual", False) or context.get("media", False)
-        
+
+        # Check if image/video content is requested and allowed by user flags
+        image_requested = context.get("image", False)
+        video_requested = context.get("video", False)
+
+        # Include visual only if planner suggests it AND user allows it (image=true)
+        include_visual = plan.get("include_visual", False) and image_requested
+
+        # Include video only if planner suggests it AND user allows it (video=true)
+        include_video = plan.get("include_video", False) and video_requested
+
         logger.debug(
             "Running parallel agents",
             include_hashtags=include_hashtags,
             include_visual=include_visual,
+            include_video=include_video,
+            image_requested=image_requested,
+            video_requested=video_requested,
         )
-        
+
         # Content agent ALWAYS runs
         agents_to_run = [
             ("content", self.content_agent.execute(state, context)),
         ]
-        
+
         # Optimization runs based on planner decision
         if include_hashtags:
             agents_to_run.append((
                 "optimization",
                 self.optimization_agent.execute(state, context, target_audience=None)
             ))
-        
-        # Visual runs based on planner decision OR media flag
+
+        # Visual runs based on planner decision AND image flag
         if include_visual:
             agents_to_run.append((
                 "visual",
                 self.visual_agent.execute(state, context)
+            ))
+
+        # Video runs based on planner decision AND video flag
+        if include_video:
+            agents_to_run.append((
+                "video",
+                self.video_agent.execute(state, context)
             ))
         
         # Run ALL in parallel
@@ -277,7 +304,9 @@ class SocialMediaManagerElf(BaseElf):
                     state["timing"] = result.get("timing")
                 elif name == "visual":
                     state["visual_advice"] = result.get("visual_advice")
-                
+                elif name == "video":
+                    state["video_advice"] = result.get("video_advice")
+
                 state["execution_trace"].append({
                     "agent": name,
                     "status": "completed",
@@ -288,19 +317,27 @@ class SocialMediaManagerElf(BaseElf):
     async def _synthesize_results(self, state: dict) -> dict:
         """Synthesize all agent outputs into final result."""
         logger.debug("Synthesizing results")
-        
+
         content = state.get("content", {})
         hashtags = state.get("hashtags", [])
         timing = state.get("timing", {})
         visual_advice = state.get("visual_advice")
-        
+        video_advice = state.get("video_advice")
+
+        # Build visual recommendations list (includes both images and videos)
+        visual_recommendations = []
+        if visual_advice:
+            visual_recommendations.append(visual_advice)
+        if video_advice:
+            visual_recommendations.append(video_advice)
+
         # Build complete post
         complete_variation = ContentVariation(
             version="optimized",
             content=content,
             hashtags=hashtags,
             posting_schedule=timing or {},
-            visual_recommendations=[visual_advice] if visual_advice else [],
+            visual_recommendations=visual_recommendations,
             complete_preview=self._build_preview(content, hashtags),
             estimated_engagement=self._estimate_engagement(
                 content,

@@ -19,13 +19,15 @@ Your role is to analyze a user's request and create a strategic plan that guides
 You will provide:
 1. Strategic direction for the post (target audience, tone, key message)
 2. Whether hashtags are needed, and what themes/categories they should focus on
-3. Whether visual content is needed, and what type/style it should be
+3. Whether visual content (images) is needed, and what type/style it should be
+4. Whether video content is needed, and what type/style it should be
 
-Your strategic plan will be passed to specialized agents (Content, Hashtag, Visual) so they create coherent, aligned output.
+Your strategic plan will be passed to specialized agents (Content, Hashtag, Visual, Video) so they create coherent, aligned output.
 
 Decision Guidelines:
 - Hashtags: Usually YES for public posts. NO for replies or private messages.
-- Visual: YES for Instagram (visual-first), YES if topic is visual/product-related. NO for text-only thought leadership.
+- Visual (Images): YES for Instagram (visual-first), YES if topic is visual/product-related. NO for text-only thought leadership.
+- Video: YES for Instagram Reels/Stories, TikTok, YouTube. YES if topic involves demonstrations, storytelling, or motion. Consider platform preferences.
 
 Be strategic but concise. Focus on actionable guidance."""
 
@@ -42,7 +44,8 @@ Content Type: {content_type}
 Analyze the request and provide:
 1. Content strategy (who to target, what tone, key message)
 2. Hashtag strategy (if needed, what themes/categories)
-3. Visual strategy (if needed, what type and style)
+3. Visual strategy (if needed, what type and style for images)
+4. Video strategy (if needed, what type and style for videos)
 
 Respond with valid JSON:
 {{
@@ -60,10 +63,19 @@ Respond with valid JSON:
     }},
     "include_visual": true,
     "visual_strategy": {{
-        "type": "image/carousel/video/infographic",
+        "type": "image/carousel/infographic",
         "style": "modern/minimalist/vibrant/professional",
         "subject": "What the visual should show",
         "mood": "The emotional tone of the visual"
+    }},
+    "include_video": true,
+    "video_strategy": {{
+        "type": "short-form/long-form/reel/story",
+        "style": "professional/casual/cinematic/documentary",
+        "subject": "What the video should show",
+        "mood": "The emotional tone of the video",
+        "duration": "15s/30s/60s/90s",
+        "format": "vertical/horizontal/square"
     }},
     "reasoning": "Brief explanation of strategic decisions"
 }}"""
@@ -96,21 +108,27 @@ class PlannerAgent:
         """
         request = state.get("user_request", {})
         context = context or {}
-        
+
+        # DEBUG: Log full payload
+        # logger.debug("=== PLANNER RECEIVED PAYLOAD ===", request=request, context=context)
+
         platform = request.get("platform", "linkedin")
         topic = request.get("topic", "")
         message = request.get("message", "")
         content_type = request.get("content_type", "thought_leadership")
-        
-        # Check if media is explicitly requested
-        media_requested = context.get("media", False)
-        
+
+        # Check if image or video is explicitly requested
+        image_requested = context.get("image", False)
+        video_requested = context.get("video", False)
+
         logger.info(
             "Planner agent executing",
             platform=platform,
-            media_requested=media_requested,
+            topic=topic[:50] if topic else "",
+            image_requested=image_requested,
+            video_requested=video_requested,
         )
-        
+
         # Generate plan using LLM
         plan = await self._generate_plan(
             platform=platform,
@@ -118,20 +136,41 @@ class PlannerAgent:
             message=message,
             content_type=content_type,
         )
-        
-        # Override visual decision if media=true is explicitly set
-        if media_requested:
+
+        # Override visual/video decisions based on user flags
+        # User flags FORCE the decision (not just permission)
+
+        # Image flag controls include_visual
+        if image_requested:
             plan["include_visual"] = True
-            plan["visual_override_reason"] = "Media explicitly requested by user"
-            logger.debug("Visual agent forced: media=true in request")
-        
+            plan["visual_override_reason"] = "Image content requested by user (image=true)"
+            logger.debug("Visual agent ENABLED: image=true in request (forced)")
+        else:
+            plan["include_visual"] = False
+            plan["visual_override_reason"] = "Image content disabled by user (image=false)"
+            logger.debug("Visual agent DISABLED: image=false in request")
+
+        # Video flag controls include_video
+        if video_requested:
+            plan["include_video"] = True
+            plan["video_override_reason"] = "Video content requested by user (video=true)"
+            logger.debug("Video agent ENABLED: video=true in request (forced)")
+        else:
+            plan["include_video"] = False
+            plan["video_override_reason"] = "Video content disabled by user (video=false)"
+            logger.debug("Video agent DISABLED: video=false in request")
+
+        # DEBUG: Print full planner output for debugging
+        # logger.debug("=== FULL PLANNER OUTPUT ===", plan=plan)
+
         logger.info(
             "Planner decision made",
             include_hashtags=plan.get("include_hashtags"),
             include_visual=plan.get("include_visual"),
+            include_video=plan.get("include_video"),
             reasoning=plan.get("reasoning", "")[:50],
         )
-        
+
         return {"plan": plan}
     
     async def _generate_plan(
@@ -163,15 +202,19 @@ class PlannerAgent:
             messages=messages,
             json_mode=True,
         )
-        
+
+        # DEBUG: Log raw LLM response
+        # logger.debug("=== RAW PLANNER LLM RESPONSE ===", response=response.content[:500])
+
         try:
             result = json.loads(response.content)
-            
+
             return {
                 # Agent routing decisions
                 "include_hashtags": result.get("include_hashtags", True),
                 "include_visual": result.get("include_visual", False),
-                
+                "include_video": result.get("include_video", False),
+
                 # Strategic guidance for Content Agent
                 "content_strategy": result.get("content_strategy") or {
                     "target_audience": "professionals",
@@ -179,22 +222,32 @@ class PlannerAgent:
                     "key_message": "",
                     "content_angle": "",
                 },
-                
+
                 # Strategic guidance for Optimization Agent
                 "hashtag_strategy": result.get("hashtag_strategy") or {
                     "themes": [],
                     "focus": "discovery",
                     "notes": "",
                 },
-                
-                # Strategic guidance for Visual Agent
+
+                # Strategic guidance for Visual Agent (Images)
                 "visual_strategy": result.get("visual_strategy") or {
                     "type": "image",
                     "style": "professional",
                     "subject": "",
                     "mood": "",
                 },
-                
+
+                # Strategic guidance for Video Agent
+                "video_strategy": result.get("video_strategy") or {
+                    "type": "short-form",
+                    "style": "professional",
+                    "subject": "",
+                    "mood": "",
+                    "duration": "30s",
+                    "format": "vertical",
+                },
+
                 "reasoning": result.get("reasoning", ""),
             }
             
@@ -204,6 +257,7 @@ class PlannerAgent:
             return {
                 "include_hashtags": True,
                 "include_visual": platform == "instagram",
+                "include_video": False,
                 "content_strategy": {
                     "target_audience": "professionals",
                     "tone": "professional",
@@ -220,6 +274,14 @@ class PlannerAgent:
                     "style": "professional",
                     "subject": "",
                     "mood": "",
+                },
+                "video_strategy": {
+                    "type": "short-form",
+                    "style": "professional",
+                    "subject": "",
+                    "mood": "",
+                    "duration": "30s",
+                    "format": "vertical",
                 },
                 "reasoning": "Fallback: defaulting to include hashtags",
             }
