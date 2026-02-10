@@ -1,6 +1,6 @@
 """
 Social Media Manager Elf Orchestrator.
-LangGraph-based workflow coordinating all mini-agents.
+LangGraph workflow with intelligent planning and conditional agent execution.
 """
 
 import asyncio
@@ -17,73 +17,66 @@ from app.agents.elves.social_media_manager.state import (
     SocialMediaState,
 )
 from app.agents.elves.social_media_manager.mini_agents import (
-    ContentGeneratorAgent,
-    HashtagResearchAgent,
-    StrategyAgent,
-    TimingOptimizerAgent,
-    VisualAdvisorAgent,
+    ContentAgent,
+    OptimizationAgent,
+    PlannerAgent,
+    VideoAgent,
+    VisualAgent,
 )
-from app.core.vector_store import vector_store
 
 logger = structlog.get_logger(__name__)
 
 
 class SocialMediaManagerElf(BaseElf):
     """
-    Social Media Manager Elf - Creates, optimizes, and schedules social media content.
-    
-    Mini-Agents:
-    1. Strategy Agent - Creates content strategy brief
-    2. Content Generator Agent - Generates content variations
-    3. Hashtag Research Agent - Researches optimal hashtags
-    4. Timing Optimizer Agent - Calculates best posting times
-    5. Visual Advisor Agent - Recommends visual content
-    
+    Social Media Manager Elf - Creates and optimizes social media content.
+
+    Mini-Agents (5 total):
+    1. Planner Agent - Decides which agents to run (runs FIRST)
+    2. Content Agent - Generates post content (runs SECOND)
+    3. Optimization Agent - Generates hashtags and timing (conditional)
+    4. Visual Agent - Generates image descriptions (conditional)
+    5. Video Agent - Generates video scripts and recommendations (conditional)
+
     Workflow Pattern:
-    - Sequential: Strategy runs first
-    - Parallel: Content, Hashtags, Timing, Visual run simultaneously
-    - Synthesis: Combines all outputs
+    - Planner runs first to decide what's needed
+    - Content runs second to generate the post
+    - Downstream agents (Optimization, Visual, Video) run in parallel based on planner decision
+    - Synthesis combines all outputs
+
+    Target: <10 second response time
     """
-    
+
     name = "social_media_manager"
     description = "Creates and optimizes social media content"
-    version = "1.0"
-    
+    version = "4.0"
+
     def __init__(self):
         # Initialize mini-agents
-        self.strategy_agent = StrategyAgent()
-        self.content_agent = ContentGeneratorAgent()
-        self.hashtag_agent = HashtagResearchAgent()
-        self.timing_agent = TimingOptimizerAgent()
-        self.visual_agent = VisualAdvisorAgent()
-        
+        self.planner_agent = PlannerAgent()
+        self.content_agent = ContentAgent()
+        self.optimization_agent = OptimizationAgent()
+        self.visual_agent = VisualAgent()
+        self.video_agent = VideoAgent()
+
         super().__init__()
     
     def _setup_workflow(self) -> None:
-        """Set up the LangGraph workflow."""
+        """Set up the LangGraph workflow with planner-first, then parallel execution."""
         
-        # Create state graph
         workflow = StateGraph(dict)
         
         # Add nodes
-        workflow.add_node("strategy", self._run_strategy)
+        workflow.add_node("planner", self._run_planner)
         workflow.add_node("parallel_agents", self._run_parallel_agents)
         workflow.add_node("synthesize", self._synthesize_results)
-        workflow.add_node("validate", self._validate_output)
         
-        # Define edges
-        workflow.set_entry_point("strategy")
-        workflow.add_edge("strategy", "parallel_agents")
+        # Define edges: planner → parallel_agents → synthesize → END
+        # After planner decides, Content + Optimization + Visual run in PARALLEL
+        workflow.set_entry_point("planner")
+        workflow.add_edge("planner", "parallel_agents")
         workflow.add_edge("parallel_agents", "synthesize")
-        workflow.add_edge("synthesize", "validate")
-        workflow.add_conditional_edges(
-            "validate",
-            self._should_retry,
-            {
-                "retry": "parallel_agents",
-                "complete": END,
-            }
-        )
+        workflow.add_edge("synthesize", END)
         
         self._workflow = workflow.compile()
     
@@ -96,52 +89,34 @@ class SocialMediaManagerElf(BaseElf):
             context: Execution context with user info
             
         Returns:
-            Generated content with all optimizations
+            Generated content with optimizations
         """
         start_time = time.time()
         
-        # Extract entities from context and merge into request
+        # Extract entities from context
         entities = context.get("entities", {})
         
-        # Build enriched request with extracted entities
+        # Build enriched request
         enriched_request = {
             **request,
-            # Use entities if not already in request
             "topic": request.get("topic") or entities.get("topic") or self._extract_topic_from_message(request.get("message", "")),
             "platform": request.get("platform") or entities.get("platform") or "linkedin",
             "content_type": request.get("content_type", "thought_leadership"),
             "goals": request.get("goals", ["engagement"]),
-            # LLM-extracted search keywords for vector DB lookup
-            "search_keywords": entities.get("search_keywords", []),
+            "message": request.get("message", ""),
         }
         
-        # Debug: Print extracted search keywords
-        if enriched_request.get("search_keywords"):
-            print("\n" + "="*70)
-            print("🎯 LLM-EXTRACTED SEARCH KEYWORDS")
-            print(f"   Keywords: {enriched_request['search_keywords']}")
-            print(f"   Topic: {enriched_request.get('topic')}")
-            print(f"   Platform: {enriched_request.get('platform')}")
-            print("="*70 + "\n")
-        
-        # SINGLE Pinecone query - do ONCE, share with all agents
-        knowledge_context = await self._retrieve_knowledge_once(
-            search_keywords=enriched_request.get("search_keywords", []),
-            user_id=context.get("user_id"),
-        )
-        
-        # Initialize state with shared knowledge_context
+        # Initialize state
         initial_state = {
             "user_request": enriched_request,
             "context": context,
-            "knowledge_context": knowledge_context,  # Shared across all agents
-            "strategy": None,
-            "content_variations": [],
+            "plan": None,  # Planner output
+            "content": None,
             "hashtags": [],
             "timing": None,
-            "visual_advice": [],
+            "visual_advice": None,
+            "video_advice": None,
             "final_output": None,
-            "retry_count": 0,
             "errors": [],
             "execution_trace": [],
         }
@@ -183,12 +158,10 @@ class SocialMediaManagerElf(BaseElf):
         if not message:
             return ""
         
-        # Common patterns for topic extraction
         patterns = [
-            r'about\s+(.+?)(?:\s+for|\s+on\s+(?:linkedin|twitter|instagram|facebook)|\.|$)',
-            r'on\s+(?!linkedin|twitter|instagram|facebook)(.+?)(?:\s+for|\.|$)',
-            r'post\s+about\s+(.+?)(?:\s+for|\s+on|\.|$)',
-            r'content\s+about\s+(.+?)(?:\s+for|\s+on|\.|$)',
+            r'about\s+(.+?)(?:\s+for|\s+on\s+(?:linkedin|twitter|instagram|facebook)|\.|\?|$)',
+            r'on\s+(?!linkedin|twitter|instagram|facebook)(.+?)(?:\s+for|\.|\?|$)',
+            r'post\s+about\s+(.+?)(?:\s+for|\s+on|\.|\?|$)',
         ]
         
         for pattern in patterns:
@@ -198,7 +171,7 @@ class SocialMediaManagerElf(BaseElf):
                 if len(topic) > 3:
                     return topic
         
-        # Last resort: Take the message after removing action words
+        # Fallback: clean action words
         cleaned = re.sub(
             r'^(?:create|write|generate|make)\s+(?:a\s+)?(?:linkedin|twitter|instagram|facebook)?\s*(?:post|content|article)?\s*',
             '',
@@ -208,98 +181,105 @@ class SocialMediaManagerElf(BaseElf):
         
         return cleaned if len(cleaned) > 3 else message
     
-    async def _retrieve_knowledge_once(
-        self,
-        search_keywords: list[str],
-        user_id: Optional[str] = None,
-    ) -> str:
-        """
-        Single Pinecone query - do ONCE and share results with all agents.
-        This avoids duplicate queries from strategy, content, and other agents.
-        """
-        if not search_keywords:
-            return ""
+    async def _run_planner(self, state: dict) -> dict:
+        """Run Planner agent to decide which downstream agents are needed."""
+        logger.debug("Running planner agent")
+        
+        context = state.get("context", {})
         
         try:
-            keyword_query = " ".join(search_keywords)
+            result = await self.planner_agent.execute(state, context)
+            state["plan"] = result.get("plan", {})
             
-            print("\n" + "="*70)
-            print("🔍 SINGLE PINECONE QUERY (Orchestrator)")
-            print(f"   Keywords: {search_keywords}")
-            print(f"   Query: {keyword_query}")
-            print(f"   User ID: {user_id}")
-            print("-"*70)
-            
-            results = await vector_store.search_knowledge(
-                query=keyword_query,
-                user_id=user_id,
-                top_k=5,
+            state["execution_trace"].append({
+                "agent": "planner",
+                "status": "completed",
+                "decision": {
+                    "include_hashtags": state["plan"].get("include_hashtags"),
+                    "include_visual": state["plan"].get("include_visual"),
+                    "include_video": state["plan"].get("include_video"),
+                },
+            })
+
+            logger.info(
+                "Planner completed",
+                include_hashtags=state["plan"].get("include_hashtags"),
+                include_visual=state["plan"].get("include_visual"),
+                include_video=state["plan"].get("include_video"),
             )
             
-            if results:
-                print(f"   Found: {len(results)} results")
-                for i, r in enumerate(results, 1):
-                    chunk_text = r.content or r.metadata.get("text", "N/A")
-                    print(f"   [{i}] Score: {r.score:.3f}")
-                    print(f"       Text: {chunk_text[:80]}...")
-                    print(f"       User: {r.metadata.get('user_id', 'N/A')}")
-                print("="*70 + "\n")
-                
-                # Format as context string for agents
-                knowledge_items = [
-                    r.content or r.metadata.get("text", "") 
-                    for r in results
-                ]
-                return "\n".join(f"- {item}" for item in knowledge_items if item)
-            else:
-                print("   No results found")
-                print("="*70 + "\n")
-                return ""
-                
         except Exception as e:
-            logger.warning("Knowledge retrieval failed", error=str(e))
-            print(f"   ❌ Error: {e}")
-            print("="*70 + "\n")
-            return ""
-    
-    async def _run_strategy(self, state: dict) -> dict:
-        """Run strategy agent."""
-        logger.debug("Running strategy agent")
-        
-        result = await self.strategy_agent.execute(
-            state, state.get("context", {})
-        )
-        
-        state["strategy"] = result.get("strategy")
-        state["execution_trace"].append({
-            "agent": "strategy",
-            "status": "completed",
-        })
+            logger.error("Planner agent failed", error=str(e))
+            # Default plan: include hashtags, visual based on image/video flags
+            image_requested = context.get("image", False)
+            video_requested = context.get("video", False)
+            state["plan"] = {
+                "include_hashtags": True,
+                "include_visual": image_requested or video_requested,
+                "reasoning": "Fallback due to planner error",
+            }
+            state["errors"].append(f"planner: {str(e)}")
+            state["execution_trace"].append({
+                "agent": "planner",
+                "status": "failed",
+                "error": str(e),
+            })
         
         return state
     
     async def _run_parallel_agents(self, state: dict) -> dict:
-        """Run content, hashtag, timing, and optionally visual agents in parallel."""
-        logger.debug("Running parallel agents")
-        
-        context = state.get("context", {})
-        include_media = context.get("media", False)
-        
-        # Build list of agents to run
+        """Run Content, Optimization, Visual, and Video agents in parallel based on planner decision."""
+        plan = state.get("plan") or {}
+        context = state.get("context") or {}
+
+        include_hashtags = plan.get("include_hashtags", True)
+
+        # Check if image/video content is requested and allowed by user flags
+        image_requested = context.get("image", False)
+        video_requested = context.get("video", False)
+
+        # Include visual only if planner suggests it AND user allows it (image=true)
+        include_visual = plan.get("include_visual", False) and image_requested
+
+        # Include video only if planner suggests it AND user allows it (video=true)
+        include_video = plan.get("include_video", False) and video_requested
+
+        logger.debug(
+            "Running parallel agents",
+            include_hashtags=include_hashtags,
+            include_visual=include_visual,
+            include_video=include_video,
+            image_requested=image_requested,
+            video_requested=video_requested,
+        )
+
+        # Content agent ALWAYS runs
         agents_to_run = [
             ("content", self.content_agent.execute(state, context)),
-            ("hashtags", self.hashtag_agent.execute(state, context)),
-            ("timing", self.timing_agent.execute(state, context)),
         ]
+
+        # Optimization runs based on planner decision
+        if include_hashtags:
+            agents_to_run.append((
+                "optimization",
+                self.optimization_agent.execute(state, context, target_audience=None)
+            ))
+
+        # Visual runs based on planner decision AND image flag
+        if include_visual:
+            agents_to_run.append((
+                "visual",
+                self.visual_agent.execute(state, context)
+            ))
+
+        # Video runs based on planner decision AND video flag
+        if include_video:
+            agents_to_run.append((
+                "video",
+                self.video_agent.execute(state, context)
+            ))
         
-        # Only run visual agent if media=true
-        if include_media:
-            agents_to_run.append(("visual", self.visual_agent.execute(state, context)))
-            logger.debug("Visual agent included (media=true)")
-        else:
-            logger.debug("Visual agent skipped (media=false)")
-        
-        # Run agents in parallel
+        # Run ALL in parallel
         agent_names = [a[0] for a in agents_to_run]
         agent_tasks = [a[1] for a in agents_to_run]
         
@@ -316,16 +296,17 @@ class SocialMediaManagerElf(BaseElf):
                     "error": str(result),
                 })
             else:
-                # Merge result into state
                 if name == "content":
-                    state["content_variations"] = result.get("content_variations", [])
-                elif name == "hashtags":
+                    state["content"] = result.get("content")
+                    state["content_output"] = result
+                elif name == "optimization":
                     state["hashtags"] = result.get("hashtags", [])
-                elif name == "timing":
                     state["timing"] = result.get("timing")
                 elif name == "visual":
-                    state["visual_advice"] = result.get("visual_advice", [])
-                
+                    state["visual_advice"] = result.get("visual_advice")
+                elif name == "video":
+                    state["video_advice"] = result.get("video_advice")
+
                 state["execution_trace"].append({
                     "agent": name,
                     "status": "completed",
@@ -336,35 +317,43 @@ class SocialMediaManagerElf(BaseElf):
     async def _synthesize_results(self, state: dict) -> dict:
         """Synthesize all agent outputs into final result."""
         logger.debug("Synthesizing results")
-        
-        content_variations = state.get("content_variations", [])
+
+        content = state.get("content", {})
         hashtags = state.get("hashtags", [])
         timing = state.get("timing", {})
-        visual_advice = state.get("visual_advice", [])
-        
-        # Build complete variations
-        complete_variations = []
-        
-        for var in content_variations:
-            complete_var = ContentVariation(
-                version=var.get("version", "variation"),
-                content=var.get("content", {}),
-                hashtags=hashtags,
-                posting_schedule=timing or {},
-                visual_recommendations=visual_advice,
-                complete_preview=self._build_preview(var, hashtags),
-                estimated_engagement=self._estimate_engagement(
-                    var, hashtags, timing, state.get("user_request", {}).get("platform", "linkedin")
-                ),
-            )
-            complete_variations.append(complete_var)
-        
-        # Generate recommendations
-        recommendations = self._generate_recommendations(complete_variations)
+        visual_advice = state.get("visual_advice")
+        video_advice = state.get("video_advice")
+
+        # Build visual recommendations list (includes both images and videos)
+        visual_recommendations = []
+        if visual_advice:
+            visual_recommendations.append(visual_advice)
+        if video_advice:
+            visual_recommendations.append(video_advice)
+
+        # Build complete post
+        complete_variation = ContentVariation(
+            version="optimized",
+            content=content,
+            hashtags=hashtags,
+            posting_schedule=timing or {},
+            visual_recommendations=visual_recommendations,
+            complete_preview=self._build_preview(content, hashtags),
+            estimated_engagement=self._estimate_engagement(
+                content,
+                hashtags,
+                timing,
+                state.get("user_request", {}).get("platform", "linkedin")
+            ),
+        )
         
         state["final_output"] = {
-            "post_variations": [v.model_dump() for v in complete_variations],
-            "recommendations": recommendations,
+            "post_variations": [complete_variation.model_dump()],
+            "recommendations": {
+                "best_variation": "optimized",
+                "reason": "AI-optimized content with strategic hashtags and timing",
+                "suggested_action": "Review and customize before scheduling",
+            },
         }
         
         state["execution_trace"].append({
@@ -374,60 +363,9 @@ class SocialMediaManagerElf(BaseElf):
         
         return state
     
-    async def _validate_output(self, state: dict) -> dict:
-        """Validate the final output meets requirements."""
-        logger.debug("Validating output")
-        
-        final_output = state.get("final_output", {})
-        variations = final_output.get("post_variations", [])
-        
-        # Check we have content
-        if not variations:
-            state["errors"].append("No content variations generated")
-            state["execution_trace"].append({
-                "agent": "validator",
-                "status": "failed",
-                "error": "No variations",
-            })
-        else:
-            # Validate each variation has content
-            for i, var in enumerate(variations):
-                content = var.get("content", {})
-                if not content.get("post_text"):
-                    state["errors"].append(f"Variation {i} has no content")
-            
-            state["execution_trace"].append({
-                "agent": "validator",
-                "status": "completed",
-            })
-        
-        return state
-    
-    def _should_retry(self, state: dict) -> str:
-        """Determine if workflow should retry."""
-        retry_count = state.get("retry_count", 0)
-        errors = state.get("errors", [])
-        final_output = state.get("final_output", {})
-        
-        # Check if we have valid output
-        has_content = bool(final_output.get("post_variations"))
-        
-        # Retry if no content and under retry limit
-        if not has_content and retry_count < 2 and errors:
-            state["retry_count"] = retry_count + 1
-            logger.warning(
-                "Retrying workflow",
-                retry_count=state["retry_count"],
-                errors=errors,
-            )
-            return "retry"
-        
-        return "complete"
-    
-    def _build_preview(self, variation: dict, hashtags: list[dict]) -> str:
+    def _build_preview(self, content: dict, hashtags: list[dict]) -> str:
         """Build complete preview of post with hashtags."""
-        content = variation.get("content", {})
-        post_text = content.get("post_text", "")
+        post_text = content.get("post_text", "") if content else ""
         
         if hashtags:
             tags = " ".join(h.get("tag", "") for h in hashtags[:5])
@@ -437,13 +375,12 @@ class SocialMediaManagerElf(BaseElf):
     
     def _estimate_engagement(
         self,
-        variation: dict,
+        content: dict,
         hashtags: list[dict],
         timing: dict,
         platform: str,
     ) -> dict:
-        """Estimate engagement metrics for variation."""
-        # Base estimates by platform
+        """Estimate engagement metrics."""
         base_reach = {
             "linkedin": 500,
             "twitter": 1000,
@@ -452,81 +389,28 @@ class SocialMediaManagerElf(BaseElf):
         }
         
         base_engagement = {
-            "linkedin": 0.03,  # 3%
-            "twitter": 0.015,  # 1.5%
-            "instagram": 0.04,  # 4%
-            "facebook": 0.02,  # 2%
+            "linkedin": 0.03,
+            "twitter": 0.015,
+            "instagram": 0.04,
+            "facebook": 0.02,
         }
         
         reach = base_reach.get(platform, 500)
         engagement_rate = base_engagement.get(platform, 0.02)
         
-        # Adjust for hashtags
+        # Boost for hashtags
         if hashtags:
-            hashtag_boost = min(len(hashtags) * 0.05, 0.3)  # Up to 30% boost
+            hashtag_boost = min(len(hashtags) * 0.05, 0.3)
             reach = int(reach * (1 + hashtag_boost))
         
-        # Adjust for optimal timing
+        # Boost for optimal timing
         if timing and timing.get("confidence", 0) > 0.8:
             reach = int(reach * 1.2)
         
         return {
             "reach": reach,
             "engagement_rate": round(engagement_rate, 4),
-            "confidence": 0.6,  # These are estimates
-        }
-    
-    def _generate_recommendations(self, variations: list[ContentVariation]) -> dict:
-        """Generate recommendations for best variation."""
-        if not variations:
-            return {
-                "best_variation": None,
-                "reason": "No variations available",
-                "suggested_action": "Try generating content again",
-            }
-        
-        # Score each variation
-        scores = []
-        for i, var in enumerate(variations):
-            score = 0
-            
-            # Has content
-            if var.content.get("post_text"):
-                score += 5
-            
-            # Has hashtags
-            if var.hashtags:
-                score += 2
-            
-            # Has timing
-            if var.posting_schedule:
-                score += 2
-            
-            # Has visual recommendations
-            if var.visual_recommendations:
-                score += 1
-            
-            # Engagement estimate
-            engagement = var.estimated_engagement.get("engagement_rate", 0)
-            score += engagement * 10
-            
-            scores.append((i, score, var.version))
-        
-        # Get best
-        best_idx, best_score, best_version = max(scores, key=lambda x: x[1])
-        
-        # Version descriptions
-        version_descriptions = {
-            "hook_focused": "attention-grabbing approach",
-            "story_focused": "narrative engagement style",
-            "value_focused": "educational content approach",
-        }
-        
-        return {
-            "best_variation": best_version,
-            "reason": f"The {version_descriptions.get(best_version, best_version)} "
-                     f"is recommended based on the content type and platform patterns.",
-            "suggested_action": "Review and customize before scheduling",
+            "confidence": 0.7,
         }
     
     def _build_response(self, state: dict, execution_time_ms: int) -> dict:
@@ -544,4 +428,3 @@ class SocialMediaManagerElf(BaseElf):
             "execution_trace": state.get("execution_trace", []),
             "errors": state.get("errors", []),
         }
-

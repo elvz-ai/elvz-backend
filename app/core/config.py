@@ -111,6 +111,22 @@ class Settings(BaseSettings):
     serp_api_key: str = ""
     google_search_console_key: str = ""
     
+    # xAI / Grok
+    xai_api_key: str = ""
+    xai_model: str = "grok-beta"
+    xai_base_url: str = "https://api.x.ai/v1"
+
+    # OpenRouter (Unified LLM Access)
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_site_url: str = "https://elvz.ai"
+    openrouter_site_name: str = "Elvz.ai"
+
+    # Firebase
+    firebase_json_path: str = ""
+    firebase_storage_bucket: str = "elvz-testing.firebasestorage.app"
+    firebase_storage_folder: str = "elvz-agent-images"
+
     # Logging
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "console"
