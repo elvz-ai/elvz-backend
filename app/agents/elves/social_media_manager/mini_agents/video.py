@@ -223,9 +223,9 @@ class VideoAgent:
 
         from app.core.model_config import TaskType
 
-        # Use task-based routing for video content creation
+        # Use task-based routing for video content generation
         response = await llm_client.generate_for_task(
-            task=TaskType.CONTENT_CREATION,
+            task=TaskType.CONTENT_GENERATION,
             messages=messages,
             json_mode=True,
         )
