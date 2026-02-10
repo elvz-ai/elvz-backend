@@ -5,7 +5,6 @@ from app.api.routes.social_media import router as social_media_router
 from app.api.routes.seo import router as seo_router
 from app.api.routes.copywriter import router as copywriter_router
 from app.api.routes.assistant import router as assistant_router
-from app.api.routes.embeddings import router as embeddings_router
 
 __all__ = [
     "chat_router",
@@ -13,6 +12,5 @@ __all__ = [
     "seo_router",
     "copywriter_router",
     "assistant_router",
-    "embeddings_router",
 ]
 
