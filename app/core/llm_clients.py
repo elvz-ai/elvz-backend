@@ -30,6 +30,8 @@ class LLMProvider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GOOGLE = "google"
+    GROK = "grok"
+    OPENROUTER = "openrouter"
 
 
 class LLMMessage(BaseModel):
@@ -429,6 +431,225 @@ class GeminiClient(BaseLLMClient):
                 yield chunk.text
 
 
+class GrokClient(BaseLLMClient):
+    """
+    xAI Grok client (OpenAI-compatible API).
+    Uses the OpenAI SDK with xAI's base URL.
+    """
+    
+    # Pricing per 1K tokens (estimated, xAI pricing may vary)
+    PRICING = {
+        "grok-beta": {"input": 0.005, "output": 0.015},
+        "grok-2": {"input": 0.005, "output": 0.015},
+    }
+    
+    def __init__(self):
+        self.client = AsyncOpenAI(
+            api_key=settings.xai_api_key,
+            base_url=settings.xai_base_url,
+        )
+        self.default_model = settings.xai_model
+    
+    def _estimate_cost(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:
+        """Estimate cost based on token usage."""
+        pricing = self.PRICING.get(model, self.PRICING["grok-beta"])
+        input_cost = (prompt_tokens / 1000) * pricing["input"]
+        output_cost = (completion_tokens / 1000) * pricing["output"]
+        return round(input_cost + output_cost, 6)
+    
+    @retry(
+        retry=retry_if_exception_type((TimeoutError, ConnectionError)),
+        stop=stop_after_attempt(settings.llm_max_retries),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+    )
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        json_mode: bool = False,
+    ) -> LLMResponse:
+        """Generate completion using Grok API."""
+        model = model or self.default_model
+        temperature = temperature if temperature is not None else settings.llm_temperature
+        max_tokens = max_tokens or settings.llm_max_tokens
+        
+        request_params = {
+            "model": model,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        
+        if json_mode:
+            request_params["response_format"] = {"type": "json_object"}
+        
+        logger.debug("Grok request", model=model, message_count=len(messages))
+        
+        response = await asyncio.wait_for(
+            self.client.chat.completions.create(**request_params),
+            timeout=settings.llm_timeout,
+        )
+        
+        prompt_tokens = response.usage.prompt_tokens
+        completion_tokens = response.usage.completion_tokens
+        
+        return LLMResponse(
+            content=response.choices[0].message.content,
+            model=model,
+            provider=LLMProvider.GROK,
+            tokens_used=prompt_tokens + completion_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            estimated_cost=self._estimate_cost(model, prompt_tokens, completion_tokens),
+        )
+    
+    async def stream_generate(
+        self,
+        messages: list[LLMMessage],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ):
+        """Stream completion using Grok API."""
+        model = model or self.default_model
+        temperature = temperature if temperature is not None else settings.llm_temperature
+        max_tokens = max_tokens or settings.llm_max_tokens
+        
+        stream = await self.client.chat.completions.create(
+            model=model,
+            messages=[{"role": m.role, "content": m.content} for m in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+
+class OpenRouterClient(BaseLLMClient):
+    """
+    OpenRouter client for unified LLM access.
+    Uses OpenAI SDK with OpenRouter's base URL.
+    Supports fallback models via extra_body.
+    """
+    
+    def __init__(self):
+        self.client = AsyncOpenAI(
+            api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_base_url,
+        )
+        self.extra_headers = {
+            "HTTP-Referer": settings.openrouter_site_url,
+            "X-Title": settings.openrouter_site_name,
+        }
+    
+    @retry(
+        retry=retry_if_exception_type((TimeoutError, ConnectionError)),
+        stop=stop_after_attempt(settings.llm_max_retries),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+    )
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        json_mode: bool = False,
+        fallbacks: Optional[list[str]] = None,
+    ) -> LLMResponse:
+        """
+        Generate completion using OpenRouter.
+        
+        Args:
+            messages: List of messages
+            model: Primary model (e.g., "openai/gpt-4o")
+            fallbacks: List of fallback models if primary fails
+        """
+        model = model or "openai/gpt-4o"
+        temperature = temperature if temperature is not None else settings.llm_temperature
+        max_tokens = max_tokens or settings.llm_max_tokens
+        
+        request_params = {
+            "model": model,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "extra_headers": self.extra_headers,
+        }
+        
+        # Add fallback models if provided
+        extra_body = {}
+        if fallbacks:
+            extra_body["models"] = fallbacks
+        
+        if json_mode:
+            request_params["response_format"] = {"type": "json_object"}
+        
+        if extra_body:
+            request_params["extra_body"] = extra_body
+        
+        logger.debug(
+            "OpenRouter request",
+            model=model,
+            fallbacks=fallbacks,
+            message_count=len(messages),
+        )
+        
+        response = await asyncio.wait_for(
+            self.client.chat.completions.create(**request_params),
+            timeout=settings.llm_timeout,
+        )
+        
+        prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+        completion_tokens = response.usage.completion_tokens if response.usage else 0
+        actual_model = response.model if hasattr(response, 'model') else model
+        
+        return LLMResponse(
+            content=response.choices[0].message.content,
+            model=actual_model,
+            provider=LLMProvider.OPENROUTER,
+            tokens_used=prompt_tokens + completion_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            estimated_cost=0.0,  # OpenRouter provides this separately
+        )
+    
+    async def stream_generate(
+        self,
+        messages: list[LLMMessage],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        fallbacks: Optional[list[str]] = None,
+    ):
+        """Stream completion using OpenRouter."""
+        model = model or "openai/gpt-4o"
+        temperature = temperature if temperature is not None else settings.llm_temperature
+        max_tokens = max_tokens or settings.llm_max_tokens
+        
+        extra_body = {}
+        if fallbacks:
+            extra_body["models"] = fallbacks
+        
+        stream = await self.client.chat.completions.create(
+            model=model,
+            messages=[{"role": m.role, "content": m.content} for m in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            extra_headers=self.extra_headers,
+            extra_body=extra_body if extra_body else None,
+        )
+        
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+
 class LLMClient:
     """
     Unified LLM client that routes to appropriate provider.
@@ -440,6 +661,8 @@ class LLMClient:
         self._openai: Optional[OpenAIClient] = None
         self._anthropic: Optional[AnthropicClient] = None
         self._gemini: Optional[GeminiClient] = None
+        self._grok: Optional[GrokClient] = None
+        self._openrouter: Optional[OpenRouterClient] = None
         
         # Set default provider from config or fallback
         if default_provider:
@@ -449,6 +672,8 @@ class LLMClient:
                 "google": LLMProvider.GOOGLE,
                 "openai": LLMProvider.OPENAI,
                 "anthropic": LLMProvider.ANTHROPIC,
+                "grok": LLMProvider.GROK,
+                "openrouter": LLMProvider.OPENROUTER,
             }
             self.default_provider = provider_map.get(
                 settings.default_llm_provider.lower(), 
@@ -476,6 +701,20 @@ class LLMClient:
             self._gemini = GeminiClient()
         return self._gemini
     
+    @property
+    def grok(self) -> GrokClient:
+        """Lazy load Grok client."""
+        if self._grok is None:
+            self._grok = GrokClient()
+        return self._grok
+    
+    @property
+    def openrouter(self) -> OpenRouterClient:
+        """Lazy load OpenRouter client."""
+        if self._openrouter is None:
+            self._openrouter = OpenRouterClient()
+        return self._openrouter
+    
     def _get_client(self, provider: Optional[LLMProvider] = None) -> BaseLLMClient:
         """Get client for specified provider."""
         provider = provider or self.default_provider
@@ -483,6 +722,10 @@ class LLMClient:
             return self.openai
         elif provider == LLMProvider.ANTHROPIC:
             return self.anthropic
+        elif provider == LLMProvider.GROK:
+            return self.grok
+        elif provider == LLMProvider.OPENROUTER:
+            return self.openrouter
         else:  # GOOGLE / Gemini is default
             return self.gemini
     
@@ -502,6 +745,39 @@ class LLMClient:
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
+            json_mode=json_mode,
+        )
+    
+    async def generate_for_task(
+        self,
+        task: str,
+        messages: list[LLMMessage],
+        json_mode: bool = False,
+    ) -> LLMResponse:
+        """
+        Generate completion using OpenRouter with task-based model routing.
+        
+        This is the preferred method for generating LLM responses.
+        Uses model_config.py to determine the model and fallbacks for each task.
+        
+        Args:
+            task: Task type from model_config.TaskType (e.g., "content_generation")
+            messages: List of messages
+            json_mode: Whether to request JSON output
+            
+        Returns:
+            LLMResponse with the generated content
+        """
+        from app.core.model_config import get_model_config
+        
+        config = get_model_config(task)
+        
+        return await self.openrouter.generate(
+            messages=messages,
+            model=config.model,
+            fallbacks=config.fallbacks,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
             json_mode=json_mode,
         )
     
@@ -529,25 +805,8 @@ class LLMClient:
         json_mode: bool = False,
     ) -> LLMResponse:
         """Generate using fast model for simple tasks."""
-        # Use the default provider's fast model
-        if self.default_provider == LLMProvider.GOOGLE:
-            return await self.gemini.generate(
-                messages=messages,
-                model=settings.google_model_fast,
-                json_mode=json_mode,
-            )
-        elif self.default_provider == LLMProvider.ANTHROPIC:
-            return await self.anthropic.generate(
-                messages=messages,
-                model="claude-3-haiku-20240307",
-                json_mode=json_mode,
-            )
-        else:
-            return await self.openai.generate(
-                messages=messages,
-                model=settings.openai_model_fast,
-                json_mode=json_mode,
-            )
+        from app.core.model_config import TaskType
+        return await self.generate_for_task(TaskType.FAST, messages, json_mode)
     
     async def generate_smart(
         self,
@@ -555,10 +814,8 @@ class LLMClient:
         json_mode: bool = False,
     ) -> LLMResponse:
         """Generate using smart model (primary) for complex tasks."""
-        return await self.generate(
-            messages=messages,
-            json_mode=json_mode,
-        )
+        from app.core.model_config import TaskType
+        return await self.generate_for_task(TaskType.GENERAL, messages, json_mode)
 
 
 # Global LLM client instance

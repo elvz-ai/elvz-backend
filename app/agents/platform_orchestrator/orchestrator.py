@@ -210,41 +210,47 @@ class PlatformOrchestrator:
         session: SessionState,
     ) -> list[tuple[str, dict]]:
         """Execute Elves based on routing decision."""
-        
+
+        # Merge request context with routing context
+        # This ensures flags like image/video are passed through
+        merged_context = {
+            **routing.context,
+            **(request.context or {}),
+        }
+
         # Prepare request for Elf
         elf_request = {
             "message": request.message,
             "user_id": request.user_id,
-            **routing.context,
-            **(request.context or {}),
+            **merged_context,
         }
-        
+
         results = []
-        
+
         if routing.execution_mode == "single":
             # Single Elf execution
             elf = self._elves.get(routing.primary_elf)
             if elf:
-                result = await elf.execute(elf_request, routing.context)
+                result = await elf.execute(elf_request, merged_context)
                 results.append((routing.primary_elf.value, result))
         
         elif routing.execution_mode == "parallel":
             # Parallel execution
             all_elves = [routing.primary_elf] + routing.additional_elves
             parallel_results = await elf_router.execute_parallel(
-                all_elves, elf_request, routing.context
+                all_elves, elf_request, merged_context
             )
-            
+
             for elf_type, result in zip(all_elves, parallel_results):
                 results.append((elf_type.value, result))
-        
+
         elif routing.execution_mode == "sequential":
             # Sequential execution
             all_elves = [routing.primary_elf] + routing.additional_elves
             sequential_results = await elf_router.execute_sequential(
-                all_elves, elf_request, routing.context
+                all_elves, elf_request, merged_context
             )
-            
+
             for elf_type, result in zip(all_elves, sequential_results):
                 results.append((elf_type.value, result))
         

@@ -1,284 +1,186 @@
 """
-Visual Advisor Agent - Provides visual content recommendations.
-Uses RAG + Few-Shot for design guidance.
+Visual Agent - Generates visual content recommendations and images.
+Uses Grok for description generation, then Google Gemini for actual image generation.
+Simplified for speed - no RAG/Pinecone dependency.
 """
 
 import json
-from typing import Any, Optional
+from typing import Optional
 
 import structlog
 
-from app.core.llm_clients import LLMMessage, llm_client
-from app.core.vector_store import vector_store
+from app.core.llm_clients import LLMMessage, LLMProvider, llm_client
+from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
+
+
+# Platform dimensions
+PLATFORM_DIMENSIONS = {
+    "linkedin": {
+        "feed_post": "1200 x 627",
+        "carousel": "1080 x 1080",
+    },
+    "twitter": {
+        "tweet_image": "1200 x 675",
+    },
+    "instagram": {
+        "feed_square": "1080 x 1080",
+        "feed_portrait": "1080 x 1350",
+        "story": "1080 x 1920",
+    },
+    "facebook": {
+        "feed_image": "1200 x 630",
+    },
+}
+
+# Visual best practices (fallback knowledge)
+VISUAL_TIPS = {
+    "linkedin": """- Professional imagery performs best
+- Include faces for 38% more engagement
+- Blue tones align with platform aesthetics
+- Infographics for data-driven content""",
+    
+    "twitter": """- Bold, high-contrast visuals stand out
+- Keep text on images minimal
+- GIFs for reactions and engagement
+- Memes work well for engagement""",
+    
+    "instagram": """- High-quality, aesthetic imagery essential
+- Consistent visual theme/filter
+- Reels outperform static images
+- Behind-the-scenes resonates""",
+    
+    "facebook": """- Native video gets priority
+- Emotional imagery performs best
+- Text overlays should be minimal
+- Live videos have highest engagement""",
+}
 
 
 VISUAL_SYSTEM_PROMPT = """You are a visual content strategist for social media.
 Your role is to recommend visual elements that complement written content.
 
-## Expertise
-- Social media visual design trends
-- Platform-specific visual requirements
-- Brand consistency in visuals
-- Engagement-driving visual patterns
-
-## Guidelines
-- Recommend visuals that enhance the message
-- Consider platform-specific dimensions
-- Balance brand colors with engagement patterns
-- Suggest accessible and inclusive visuals
-
-## Visual Types
-- Images (photos, graphics, illustrations)
-- Carousels (multi-image posts)
-- Videos (short-form, long-form)
-- Infographics (data visualization)
-- Text graphics (quote cards, tips)"""
+Provide specific, actionable visual recommendations including:
+- Type of visual (image, carousel, video, infographic)
+- Description of what the visual should contain
+- Style and color recommendations
+- Platform-specific considerations"""
 
 
-VISUAL_USER_PROMPT = """Recommend visual content for this post:
+VISUAL_USER_PROMPT = """Recommend visual content for this {platform} post.
 
-## Content Summary
-Platform: {platform}
+## Post Details
 Topic: {topic}
-Content Type: {content_type}
-Key Messages: {key_messages}
+Target Audience: {target_audience}
+Platform: {platform}
 
-## Brand Guidelines
-{brand_guidelines}
+## Platform Best Practices
+{visual_tips}
 
-## Visual Best Practices
-{visual_practices}
+## Brand Colors (if any)
+{brand_colors}
 
-Recommend visual elements that will enhance engagement.
+## Strategic Direction (from Planner)
+- Visual Style: {style}
+- Visual Type: {type}
+- Subject: {subject}
+- Mood: {mood}
+
+Generate a visual recommendation aligned with this strategy.
 
 Respond with valid JSON:
 {{
-    "primary_recommendation": {{
-        "type": "image/carousel/video/infographic/text_graphic",
-        "description": "detailed description of recommended visual",
-        "rationale": "why this visual works"
-    }},
-    "alternative_options": [
-        {{
-            "type": "visual type",
-            "description": "description",
-            "rationale": "why"
-        }}
-    ],
-    "design_specs": {{
-        "dimensions": "recommended dimensions",
-        "color_palette": ["color1", "color2"],
-        "style": "style description",
-        "key_elements": ["element1", "element2"]
-    }},
-    "accessibility_notes": "accessibility considerations"
+    "type": "image/carousel/video/infographic",
+    "description": "Detailed description of the visual content",
+    "style": "Style notes (colors, mood, aesthetic)",
+    "dimensions": "Recommended dimensions"
 }}"""
 
 
-class VisualAdvisorAgent:
+class VisualAgent:
     """
-    Visual Advisor Agent for Social Media Manager.
+    Visual Agent for Social Media Manager.
     
-    Method: RAG + Few-Shot
-    - Retrieves visual best practices from knowledge base
-    - Uses brand style guidelines
-    - Generates specific visual recommendations
+    Generates visual content descriptions using Grok.
+    Image generation can be added later with a separate model.
     """
     
-    name = "visual_advisor_agent"
-    
-    # Platform-specific dimensions
-    PLATFORM_DIMENSIONS = {
-        "linkedin": {
-            "feed_post": "1200 x 627",
-            "carousel": "1080 x 1080",
-            "profile_banner": "1584 x 396",
-        },
-        "twitter": {
-            "tweet_image": "1200 x 675",
-            "header": "1500 x 500",
-        },
-        "instagram": {
-            "feed_square": "1080 x 1080",
-            "feed_portrait": "1080 x 1350",
-            "story": "1080 x 1920",
-            "reel": "1080 x 1920",
-        },
-        "facebook": {
-            "feed_image": "1200 x 630",
-            "story": "1080 x 1920",
-        },
-    }
+    name = "visual_agent"
     
     async def execute(self, state: dict, context: dict) -> dict:
         """
-        Generate visual recommendations.
+        Generate visual content recommendations.
         
         Args:
             state: Current workflow state
             context: Execution context
             
         Returns:
-            Updated state with visual recommendations
+            Updated state with visual advice
         """
-        request = state.get("user_request", {})
-        strategy = state.get("strategy", {})
-        
+        request = state.get("user_request") or {}
+        content = state.get("content") or {}
+
         platform = request.get("platform", "linkedin")
         topic = request.get("topic", "")
-        content_type = request.get("content_type", "thought_leadership")
-        
-        # Get user_id for filtering
-        user_id = context.get("user_id")
+        target_audience = content.get("target_audience", "professionals")
         
         logger.info(
-            "Visual advisor executing",
+            "Visual agent executing",
             platform=platform,
-            content_type=content_type,
-            user_id=user_id,
         )
         
-        # Get brand guidelines
-        brand_guidelines = self._get_brand_guidelines(context)
+        # Get platform-specific info
+        visual_tips = VISUAL_TIPS.get(platform, VISUAL_TIPS["linkedin"])
+        dimensions = PLATFORM_DIMENSIONS.get(platform, {})
         
-        # Retrieve visual best practices (with user_id for personalized knowledge)
-        visual_practices = await self._retrieve_visual_practices(platform, content_type, user_id)
+        # Get brand colors if available
+        context = context or {}
+        brand_info = context.get("brand_info") or {}
+        brand_colors = brand_info.get("brand_colors", "No specific brand colors")
         
-        # Generate recommendations
-        visual_advice = await self._generate_recommendations(
+        # Get visual strategy from planner
+        plan = state.get("plan") or {}
+        visual_strategy = plan.get("visual_strategy") or {}
+        
+        # Generate visual recommendation using Grok
+        visual_advice = await self._generate_visual(
             platform=platform,
             topic=topic,
-            content_type=content_type,
-            key_messages=strategy.get("key_messages", []),
-            brand_guidelines=brand_guidelines,
-            visual_practices=visual_practices,
+            target_audience=target_audience,
+            visual_tips=visual_tips,
+            brand_colors=brand_colors,
+            dimensions=dimensions,
+            visual_strategy=visual_strategy,
         )
         
         return {"visual_advice": visual_advice}
     
-    def _get_brand_guidelines(self, context: dict) -> str:
-        """Get brand visual guidelines from context."""
-        brand_info = context.get("brand_info", {})
-        
-        if not brand_info:
-            return "No specific brand guidelines. Use professional, clean visuals."
-        
-        parts = []
-        
-        if brand_info.get("brand_colors"):
-            parts.append(f"Brand Colors: {brand_info['brand_colors']}")
-        
-        if brand_info.get("visual_style"):
-            parts.append(f"Visual Style: {brand_info['visual_style']}")
-        
-        if brand_info.get("logo_usage"):
-            parts.append(f"Logo Usage: {brand_info['logo_usage']}")
-        
-        return "\n".join(parts) if parts else "No specific brand guidelines."
-    
-    async def _retrieve_visual_practices(
-        self,
-        platform: str,
-        content_type: str,
-        user_id: Optional[str] = None,
-    ) -> str:
-        """Retrieve visual best practices from Pinecone knowledge base."""
-        try:
-            query = f"Visual design best practices for {content_type} on {platform}"
-            
-            results = await vector_store.search_knowledge(
-                query=query,
-                user_id=user_id,  # Filter by user_id for personalized knowledge
-                platform=platform,
-                category="visual",
-                top_k=3,
-            )
-            
-            if results:
-                practices = [r.content for r in results]
-                
-                # Debug: Print retrieved visual practices to terminal
-                print("\n" + "="*70)
-                print(f"🎨 PINECONE VISUAL PRACTICES RETRIEVED (Visual Agent)")
-                print(f"   Query: {query}")
-                print(f"   User ID: {user_id}")
-                print(f"   Platform: {platform}")
-                print(f"   Results: {len(results)}")
-                print("-"*70)
-                for i, r in enumerate(results, 1):
-                    # Get content from either content field or metadata.text
-                    chunk_text = r.content or r.metadata.get("text", "N/A")
-                    print(f"   [{i}] Score: {r.score:.3f}")
-                    print(f"       Text: {chunk_text}")
-                    print(f"       Category: {r.metadata.get('category', 'N/A')}")
-                    print(f"       User: {r.metadata.get('user_id', 'N/A')}")
-                    print()
-                print("="*70 + "\n")
-                
-                logger.info(
-                    "Retrieved visual practices from Pinecone",
-                    count=len(results),
-                    user_id=user_id,
-                    platform=platform
-                )
-                return "\n".join(f"- {p}" for p in practices)
-            
-        except Exception as e:
-            logger.warning("Visual practices retrieval from Pinecone failed", error=str(e))
-        
-        # Return fallback practices
-        return self._get_fallback_practices(platform)
-    
-    def _get_fallback_practices(self, platform: str) -> str:
-        """Get fallback visual practices."""
-        practices = {
-            "linkedin": """- Professional imagery performs best
-- Include faces for 38% more engagement
-- Blue tones align with platform aesthetics
-- Infographics for data-driven content
-- Carousels for educational content""",
-            
-            "twitter": """- Bold, high-contrast visuals stand out
-- Memes and humor work well
-- Keep text on images minimal
-- GIFs for reactions and engagement
-- Thread visuals for storytelling""",
-            
-            "instagram": """- High-quality, aesthetic imagery essential
-- Consistent visual theme/filter
-- User-generated content performs well
-- Behind-the-scenes resonates
-- Reels outperform static images""",
-            
-            "facebook": """- Native video gets priority
-- Emotional imagery performs best
-- Text overlays should be minimal
-- Live videos have highest engagement
-- 360 photos for immersive experiences""",
-        }
-        
-        return practices.get(platform, practices["linkedin"])
-    
-    async def _generate_recommendations(
+    async def _generate_visual(
         self,
         platform: str,
         topic: str,
-        content_type: str,
-        key_messages: list[str],
-        brand_guidelines: str,
-        visual_practices: str,
-    ) -> list[dict]:
-        """Generate visual recommendations using LLM."""
+        target_audience: str,
+        visual_tips: str,
+        brand_colors: str,
+        dimensions: dict,
+        visual_strategy: dict,
+    ) -> dict:
+        """Generate visual recommendation using Grok."""
+        
+        visual_strategy = visual_strategy or {}
         
         user_prompt = VISUAL_USER_PROMPT.format(
             platform=platform,
             topic=topic,
-            content_type=content_type,
-            key_messages=", ".join(key_messages) if key_messages else "Not specified",
-            brand_guidelines=brand_guidelines,
-            visual_practices=visual_practices,
+            target_audience=target_audience,
+            visual_tips=visual_tips,
+            brand_colors=brand_colors,
+            style=visual_strategy.get("style", "Professional"),
+            type=visual_strategy.get("type", "Image"),
+            subject=visual_strategy.get("subject", topic),
+            mood=visual_strategy.get("mood", "Professional"),
         )
         
         messages = [
@@ -286,73 +188,200 @@ class VisualAdvisorAgent:
             LLMMessage(role="user", content=user_prompt),
         ]
         
-        response = await llm_client.generate_fast(messages, json_mode=True)
+        from app.core.model_config import TaskType
+        
+        # Use OpenRouter with task-based routing
+        response = await llm_client.generate_for_task(
+            task=TaskType.VISUAL_DESCRIPTION,
+            messages=messages,
+            json_mode=True,
+        )
         
         try:
+            # Add null check for response
+            if response is None or not response.content:
+                logger.warning("Visual generation returned empty response")
+                raise ValueError("Empty response from LLM")
+
             result = json.loads(response.content)
-            
-            # Format recommendations
-            recommendations = []
-            
-            # Primary recommendation
-            primary = result.get("primary_recommendation", {})
-            if primary:
-                recommendations.append({
-                    "type": primary.get("type", "image"),
-                    "description": primary.get("description", ""),
-                    "rationale": primary.get("rationale", ""),
-                    "is_primary": True,
-                })
-            
-            # Alternatives
-            for alt in result.get("alternative_options", [])[:2]:
-                recommendations.append({
-                    "type": alt.get("type", "image"),
-                    "description": alt.get("description", ""),
-                    "rationale": alt.get("rationale", ""),
-                    "is_primary": False,
-                })
-            
-            # Add design specs to primary
-            if recommendations:
-                specs = result.get("design_specs", {})
-                recommendations[0]["specs"] = {
-                    "dimensions": specs.get("dimensions") or self._get_dimensions(platform),
-                    "colors": specs.get("color_palette", []),
-                    "style": specs.get("style", ""),
-                    "elements": specs.get("key_elements", []),
-                }
-                recommendations[0]["accessibility"] = result.get("accessibility_notes", "")
-            
-            logger.debug("Visual recommendations generated", count=len(recommendations))
-            return recommendations
-            
-        except json.JSONDecodeError as e:
+
+            # Add null check for parsed result
+            if result is None or not isinstance(result, dict):
+                logger.warning("Visual generation returned null or non-dict result", result=result)
+                raise ValueError("Invalid result format")
+
+            # Get default dimension for platform
+            default_dim = list(dimensions.values())[0] if dimensions else "1200 x 630"
+
+            visual_advice = {
+                "type": result.get("type", "image"),
+                "description": result.get("description", ""),
+                "style": result.get("style", ""),
+                "dimensions": result.get("dimensions", default_dim),
+                "platform": platform,
+                "image_url": None,
+                "generation_status": "description_only",
+            }
+
+            logger.debug("Visual recommendation generated", type=visual_advice["type"])
+
+            # Generate actual image using the description
+            try:
+                image_result = await self._generate_image(
+                    description=visual_advice["description"],
+                    style=visual_advice["style"],
+                    dimensions=visual_advice["dimensions"],
+                )
+                if image_result:
+                    visual_advice["image_url"] = image_result.get("url")
+                    visual_advice["generation_status"] = "image_generated"
+                    logger.info("Image generated successfully", has_url=bool(image_result.get("url")))
+            except Exception as e:
+                logger.warning("Image generation failed, using description only", error=str(e))
+                # Continue with description only
+
+            return visual_advice
+
+        except (json.JSONDecodeError, ValueError) as e:
             logger.error("Visual parsing failed", error=str(e))
             # Return fallback
-            return [{
+            return {
                 "type": "image",
                 "description": f"Professional visual related to {topic}",
-                "rationale": "Default recommendation due to generation error",
-                "is_primary": True,
-                "specs": {
-                    "dimensions": self._get_dimensions(platform),
-                    "colors": ["#0077B5", "#FFFFFF"],  # LinkedIn blue
-                    "style": "clean and professional",
-                    "elements": [],
-                },
-            }]
-    
-    def _get_dimensions(self, platform: str, image_type: str = "feed_post") -> str:
-        """Get recommended dimensions for platform."""
-        platform_dims = self.PLATFORM_DIMENSIONS.get(platform, {})
-        
-        # Try to get specific type, fall back to first available
-        if image_type in platform_dims:
-            return platform_dims[image_type]
-        
-        if platform_dims:
-            return list(platform_dims.values())[0]
-        
-        return "1200 x 630"  # Safe default
+                "style": "Clean, modern, professional",
+                "dimensions": list(dimensions.values())[0] if dimensions else "1200 x 630",
+                "platform": platform,
+                "image_url": None,
+                "generation_status": "description_only",
+            }
 
+    async def _generate_image(
+        self,
+        description: str,
+        style: str,
+        dimensions: str,
+    ) -> Optional[dict]:
+        """
+        Generate actual image using the description.
+
+        Args:
+            description: Text description of the image
+            style: Style notes for the image
+            dimensions: Target dimensions
+
+        Returns:
+            Dictionary with image URL or None if generation fails
+        """
+        try:
+            # Build the image generation prompt
+            image_prompt = f"""Generate a high-quality social media image with the following specifications:
+
+Description: {description}
+Style: {style}
+Dimensions: {dimensions}
+
+Create a visually appealing, professional image that matches this description."""
+
+            from app.core.model_config import TaskType, get_model_config
+            from app.core.config import settings
+
+            # Get model config for image generation
+            config = get_model_config(TaskType.IMAGE_GENERATION)
+
+            # Call OpenRouter directly with proper parameters for image generation
+            logger.debug("Requesting image generation", prompt_length=len(image_prompt))
+
+            # Use OpenRouter client directly to access raw response
+            openrouter_client = llm_client.openrouter.client
+
+            request_params = {
+                "model": config.model,
+                "messages": [{"role": "user", "content": image_prompt}],
+                "extra_headers": llm_client.openrouter.extra_headers,
+                "extra_body": {
+                    "models": config.fallbacks,
+                }
+            }
+
+            # Make the API call
+            response = await openrouter_client.chat.completions.create(**request_params)
+
+            # OpenRouter image generation returns images in message.images field
+            message = response.choices[0].message
+
+            # Extract base64 image from response
+            base64_image = None
+
+            # Check for images field (new OpenRouter format)
+            if hasattr(message, 'images') and message.images:
+                try:
+                    first_image = message.images[0]
+
+                    # Try different ways to access the URL (dict vs object)
+                    image_url = None
+
+                    # Method 1: Try as object attributes
+                    if hasattr(first_image, 'image_url'):
+                        image_url_obj = first_image.image_url
+                        if hasattr(image_url_obj, 'url'):
+                            image_url = image_url_obj.url
+
+                    # Method 2: Try as dictionary
+                    if not image_url and isinstance(first_image, dict):
+                        image_url = first_image.get('image_url', {}).get('url')
+
+                    # Method 3: Try direct url field
+                    if not image_url:
+                        if hasattr(first_image, 'url'):
+                            image_url = first_image.url
+                        elif isinstance(first_image, dict) and 'url' in first_image:
+                            image_url = first_image['url']
+
+                    if image_url and image_url.startswith('data:image'):
+                        base64_image = image_url
+
+                except Exception as e:
+                    logger.error("Error extracting image from images field", error=str(e))
+
+            # Fallback: check message content for URL or base64
+            if not base64_image and message.content:
+                content = message.content.strip()
+
+                # Check if response is a direct URL
+                if content.startswith("http://") or content.startswith("https://"):
+                    return {"url": content}
+
+                # Check if response is JSON with URL
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict):
+                        url = parsed.get("url") or parsed.get("image_url") or parsed.get("data", {}).get("url")
+                        if url:
+                            if url.startswith("http"):
+                                return {"url": url}
+                            elif url.startswith("data:image"):
+                                base64_image = url
+                except json.JSONDecodeError:
+                    pass
+
+                # If response is base64 without prefix
+                if not base64_image and len(content) > 100 and not content.startswith("http"):
+                    base64_image = f"data:image/png;base64,{content}"
+
+            # Upload to Firebase Storage if we have base64 data
+            if base64_image:
+                from app.core.firebase_storage import upload_base64_image
+                firebase_url = upload_base64_image(base64_image)
+                if firebase_url:
+                    logger.info("Image uploaded to Firebase Storage")
+                    return {"url": firebase_url}
+                else:
+                    logger.warning("Failed to upload to Firebase, returning base64")
+                    return {"url": base64_image}
+
+            logger.warning("Image generation returned unexpected format")
+            return None
+
+        except Exception as e:
+            logger.error("Image generation failed", error=str(e))
+            return None

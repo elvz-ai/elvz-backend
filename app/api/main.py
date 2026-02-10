@@ -12,6 +12,7 @@ from app.api.routes import (
     assistant_router,
     chat_router,
     copywriter_router,
+    embeddings_router,
     seo_router,
     social_media_router,
 )
@@ -19,6 +20,8 @@ from app.api.websocket import websocket_endpoint
 from app.core.config import settings
 from app.core.cache import cache
 from app.core.database import init_db, close_db
+from app.core.vector_store import vector_store
+from app.core.firebase_storage import initialize_firebase
 
 logger = structlog.get_logger(__name__)
 
@@ -46,6 +49,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Database initialization failed", error=str(e))
     
+    # Pre-connect Pinecone (saves ~3 sec on first request)
+    try:
+        await vector_store.connect()
+        logger.info("Pinecone connected")
+    except Exception as e:
+        logger.warning("Pinecone connection failed (will retry on first request)", error=str(e))
+
+    # Initialize Firebase Storage
+    try:
+        initialize_firebase()
+        logger.info("Firebase Storage initialized")
+    except Exception as e:
+        logger.warning("Firebase initialization failed (will retry on first request)", error=str(e))
+
     # Register Elves with orchestrator
     await register_elves()
     
@@ -112,6 +129,7 @@ app.include_router(social_media_router, prefix=settings.api_v1_prefix)
 app.include_router(seo_router, prefix=settings.api_v1_prefix)
 app.include_router(copywriter_router, prefix=settings.api_v1_prefix)
 app.include_router(assistant_router, prefix=settings.api_v1_prefix)
+app.include_router(embeddings_router, prefix=settings.api_v1_prefix)
 
 
 # WebSocket endpoint
@@ -146,6 +164,7 @@ async def root() -> dict:
             "seo": f"{settings.api_v1_prefix}/elves/seo",
             "copywriter": f"{settings.api_v1_prefix}/elves/copywriter",
             "assistant": f"{settings.api_v1_prefix}/elves/assistant",
+            "embeddings": f"{settings.api_v1_prefix}/embeddings/ingest",
             "websocket": "/ws/stream/{{client_id}}",
         },
     }

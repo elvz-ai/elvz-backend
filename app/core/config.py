@@ -76,6 +76,17 @@ class Settings(BaseSettings):
     llm_timeout: int = 60
     llm_max_retries: int = 3
     
+    # Output Settings
+    include_reasoning: bool = False  # If True, agents include detailed rationale/reasoning
+    
+    # Vertex AI (Google Cloud)
+    google_cloud_project: str = ""  # GCP project ID
+    google_cloud_location: str = "us-central1"  # GCP region
+    google_application_credentials: str = "credentials/google-service-account.json"  # Path to service account JSON
+    vertex_embedding_model: str = "multimodalembedding@001"  # Multimodal embedding model
+    vertex_vector_index_endpoint: str = ""  # Vector Search index endpoint (full resource name)
+    vertex_deployed_index_id: str = ""  # Deployed index ID
+    
     # Vector Database - Pinecone
     pinecone_api_key: str = ""
     pinecone_environment: str = "us-east-1"
@@ -100,6 +111,22 @@ class Settings(BaseSettings):
     serp_api_key: str = ""
     google_search_console_key: str = ""
     
+    # xAI / Grok
+    xai_api_key: str = ""
+    xai_model: str = "grok-beta"
+    xai_base_url: str = "https://api.x.ai/v1"
+
+    # OpenRouter (Unified LLM Access)
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_site_url: str = "https://elvz.ai"
+    openrouter_site_name: str = "Elvz.ai"
+
+    # Firebase
+    firebase_json_path: str = ""
+    firebase_storage_bucket: str = "elvz-testing.firebasestorage.app"
+    firebase_storage_folder: str = "elvz-agent-images"
+
     # Logging
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "console"
