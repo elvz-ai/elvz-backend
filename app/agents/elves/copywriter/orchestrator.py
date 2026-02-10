@@ -13,7 +13,6 @@ from langgraph.graph import END, StateGraph
 
 from app.agents.elves.base import BaseElf
 from app.core.llm_clients import LLMMessage, llm_client
-from app.core.vector_store import vector_store
 from app.core.cache import cache
 
 logger = structlog.get_logger(__name__)
