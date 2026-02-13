@@ -131,6 +131,38 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "console"
 
+    # AWS Bedrock (Guardrails)
+    aws_region: str = "us-east-1"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    bedrock_guardrail_id: str = ""
+    bedrock_guardrail_version: str = "DRAFT"
+
+    # LangFuse (LLM Observability)
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+
+    # Sentry (Error Tracking)
+    sentry_dsn: str = ""
+    sentry_environment: str = "development"
+    sentry_traces_sample_rate: float = 0.1
+
+    # Conversation Settings
+    conversation_max_messages: int = 100
+    conversation_context_window: int = 10  # Recent messages to include in context
+    hitl_request_timeout_seconds: int = 300  # 5 minutes
+
+    # Memory Settings
+    memory_working_ttl: int = 3600  # 1 hour for working memory
+    memory_short_term_limit: int = 50  # Max messages in short-term memory
+    memory_rag_top_k: int = 5  # Top K for RAG retrieval
+    memory_token_budget: int = 6000  # Max tokens for context
+
+    # Query Decomposition
+    max_platforms_per_query: int = 3
+    enable_parallel_generation: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

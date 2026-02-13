@@ -318,9 +318,9 @@ class SocialMediaManagerElf(BaseElf):
         """Synthesize all agent outputs into final result."""
         logger.debug("Synthesizing results")
 
-        content = state.get("content", {})
-        hashtags = state.get("hashtags", [])
-        timing = state.get("timing", {})
+        content = state.get("content") or {}
+        hashtags = state.get("hashtags") or []
+        timing = state.get("timing") or {}
         visual_advice = state.get("visual_advice")
         video_advice = state.get("video_advice")
 

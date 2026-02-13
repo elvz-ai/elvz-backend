@@ -39,6 +39,7 @@ env/
 # Environment
 .env
 .env.local
+.env.example
 .env.*.local
 *.env
 

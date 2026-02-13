@@ -15,6 +15,9 @@ from app.api.routes import (
     seo_router,
     social_media_router,
 )
+from app.api.routes.conversations import router as conversations_router
+from app.api.routes.artifacts import router as artifacts_router
+from app.api.routes.chat_v2 import router as chat_v2_router
 from app.api.websocket import websocket_endpoint
 from app.core.config import settings
 from app.core.cache import cache
@@ -53,6 +56,22 @@ async def lifespan(app: FastAPI):
         logger.info("Firebase Storage initialized")
     except Exception as e:
         logger.warning("Firebase initialization failed (will retry on first request)", error=str(e))
+
+    # Initialize Sentry for error tracking
+    try:
+        from app.core.observability import init_sentry
+        init_sentry()
+        logger.info("Sentry initialized")
+    except Exception as e:
+        logger.warning("Sentry initialization failed", error=str(e))
+
+    # Initialize LangGraph checkpointer
+    try:
+        from app.core.checkpointer import get_checkpointer
+        await get_checkpointer()
+        logger.info("LangGraph checkpointer initialized")
+    except Exception as e:
+        logger.warning("Checkpointer initialization failed", error=str(e))
 
     # Register Elves with orchestrator
     await register_elves()
@@ -116,6 +135,9 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(chat_router, prefix=settings.api_v1_prefix)
+app.include_router(chat_v2_router, prefix=settings.api_v1_prefix)
+app.include_router(conversations_router, prefix=settings.api_v1_prefix)
+app.include_router(artifacts_router, prefix=settings.api_v1_prefix)
 app.include_router(social_media_router, prefix=settings.api_v1_prefix)
 app.include_router(seo_router, prefix=settings.api_v1_prefix)
 app.include_router(copywriter_router, prefix=settings.api_v1_prefix)

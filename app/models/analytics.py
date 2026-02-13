@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -139,11 +139,11 @@ class UsageSummary(Base):
     total_cost: Mapped[float] = mapped_column(Float, default=0.0)
     
     # Per-Elf Breakdown
-    requests_by_elf: Mapped[dict] = mapped_column(default=dict)
+    requests_by_elf: Mapped[dict] = mapped_column(JSON, default=dict)
     # {"social_media": 50, "seo": 30, "copywriter": 20, "assistant": 100}
-    
-    tokens_by_elf: Mapped[dict] = mapped_column(default=dict)
-    cost_by_elf: Mapped[dict] = mapped_column(default=dict)
+
+    tokens_by_elf: Mapped[dict] = mapped_column(JSON, default=dict)
+    cost_by_elf: Mapped[dict] = mapped_column(JSON, default=dict)
     
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
