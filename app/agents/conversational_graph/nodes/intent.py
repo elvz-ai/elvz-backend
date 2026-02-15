@@ -107,7 +107,18 @@ class IntentClassifierNode:
                 state["is_multi_platform"] = True
 
             execution_time = int((time.time() - start_time) * 1000)
-            add_execution_trace(state, "intent_classifier", "completed", execution_time)
+            add_execution_trace(
+                state,
+                "intent_classifier",
+                "completed",
+                execution_time,
+                metadata={
+                    "intent_type": intent.get("type"),
+                    "confidence": intent.get("confidence"),
+                    "entities": (intent.get("entities") or {}),
+                    "reasoning": (intent.get("reasoning") or "")[:100],  # Truncate reasoning
+                }
+            )
             add_stream_event(
                 state,
                 "node_completed",

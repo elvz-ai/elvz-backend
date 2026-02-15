@@ -241,7 +241,22 @@ async def invoke_conversation(
     Returns:
         Final conversation state
     """
+    import time
+    from uuid import uuid4
     from app.agents.conversational_graph.state import create_initial_state
+    from app.services.execution_monitor import execution_logger, ExecutionStatus
+
+    # Generate execution ID for monitoring
+    execution_id = str(uuid4())
+    start_time = time.time()
+
+    # Log execution start (non-blocking)
+    execution_logger.log_execution_started(
+        execution_id=execution_id,
+        conversation_id=conversation_id,
+        user_id=user_id,
+        request_message=user_input,
+    )
 
     # Get graph
     graph = await get_conversational_graph()
@@ -254,6 +269,9 @@ async def invoke_conversation(
         user_input=user_input,
     )
 
+    # Store execution_id in state for tracking
+    initial_state["execution_id"] = execution_id
+
     # Build config with thread_id for checkpointing
     invoke_config = {
         "configurable": {
@@ -264,10 +282,51 @@ async def invoke_conversation(
     if config:
         invoke_config.update(config)
 
-    # Invoke graph
-    result = await graph.ainvoke(initial_state, invoke_config)
+    try:
+        # Invoke graph
+        result = await graph.ainvoke(initial_state, invoke_config)
 
-    return result
+        # Calculate duration
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        # Determine status based on errors
+        errors = result.get("errors", [])
+        failed_nodes = [
+            trace["node"]
+            for trace in result.get("execution_trace", [])
+            if trace.get("status") == "failed"
+        ]
+
+        if errors or failed_nodes:
+            status = ExecutionStatus.PARTIAL if result.get("final_response") else ExecutionStatus.FAILED
+        else:
+            status = ExecutionStatus.COMPLETED
+
+        # Log execution completion (non-blocking)
+        execution_logger.log_execution_completed(
+            execution_id=execution_id,
+            status=status,
+            duration_ms=duration_ms,
+            response_message=result.get("final_response", ""),
+            execution_trace=result.get("execution_trace", []),
+            error_summary="; ".join(errors) if errors else None,
+            failed_nodes=failed_nodes,
+            start_time=start_time,
+        )
+
+        return result
+
+    except Exception as e:
+        # Log failed execution
+        duration_ms = int((time.time() - start_time) * 1000)
+        execution_logger.log_execution_completed(
+            execution_id=execution_id,
+            status=ExecutionStatus.FAILED,
+            duration_ms=duration_ms,
+            error_summary=str(e),
+            failed_nodes=["unknown"],
+        )
+        raise
 
 
 async def stream_conversation(

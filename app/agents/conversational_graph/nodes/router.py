@@ -116,8 +116,8 @@ def get_route(state: ConversationState) -> str:
     Returns:
         Name of next node
     """
-    route = state.get("working_memory", {}).get("route", "artifact_generation")
-    needs_data_check = state.get("working_memory", {}).get("needs_data_check", False)
+    route = (state.get("working_memory") or {}).get("route", "artifact_generation")
+    needs_data_check = (state.get("working_memory") or {}).get("needs_data_check", False)
 
     if route == "qa_response":
         # For Q&A, go directly to aggregator (which will generate response)

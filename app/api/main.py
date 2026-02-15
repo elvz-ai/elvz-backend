@@ -18,6 +18,7 @@ from app.api.routes import (
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.artifacts import router as artifacts_router
 from app.api.routes.chat_v2 import router as chat_v2_router
+from app.api.routes.monitoring import router as monitoring_router
 from app.api.websocket import websocket_endpoint
 from app.core.config import settings
 from app.core.cache import cache
@@ -73,6 +74,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Checkpointer initialization failed", error=str(e))
 
+    # Start execution logger
+    try:
+        from app.services.execution_monitor import execution_logger
+        await execution_logger.start()
+        logger.info("Execution logger started")
+    except Exception as e:
+        logger.warning("Execution logger startup failed", error=str(e))
+
     # Register Elves with orchestrator
     await register_elves()
     
@@ -80,7 +89,15 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down Elvz.ai Backend")
-    
+
+    # Stop execution logger
+    try:
+        from app.services.execution_monitor import execution_logger
+        await execution_logger.stop()
+        logger.info("Execution logger stopped")
+    except Exception as e:
+        logger.warning("Execution logger shutdown failed", error=str(e))
+
     await cache.disconnect()
     await close_db()
 
@@ -138,6 +155,7 @@ app.include_router(chat_router, prefix=settings.api_v1_prefix)
 app.include_router(chat_v2_router, prefix=settings.api_v1_prefix)
 app.include_router(conversations_router, prefix=settings.api_v1_prefix)
 app.include_router(artifacts_router, prefix=settings.api_v1_prefix)
+app.include_router(monitoring_router, prefix=settings.api_v1_prefix)
 app.include_router(social_media_router, prefix=settings.api_v1_prefix)
 app.include_router(seo_router, prefix=settings.api_v1_prefix)
 app.include_router(copywriter_router, prefix=settings.api_v1_prefix)

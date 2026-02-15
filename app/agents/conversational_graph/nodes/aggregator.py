@@ -70,7 +70,20 @@ class StreamAggregatorNode:
             state["working_memory"]["event_count"] = len(events)
 
             execution_time = int((time.time() - start_time) * 1000)
-            add_execution_trace(state, "stream_aggregator", "completed", execution_time)
+            add_execution_trace(
+                state,
+                "stream_aggregator",
+                "completed",
+                execution_time,
+                metadata={
+                    "has_response": bool(state.get("final_response")),
+                    "response_preview": ((state.get("final_response") or "")[:100] + "..."
+                                       if state.get("final_response") and len(state.get("final_response") or "") > 100
+                                       else (state.get("final_response") or "")),
+                    "artifact_count": len(state.get("artifacts", [])),
+                    "event_count": len(events),
+                }
+            )
             add_stream_event(
                 state,
                 "node_completed",
@@ -173,9 +186,9 @@ class StreamAggregatorNode:
 
         if len(artifacts) == 1:
             artifact = artifacts[0]
-            platform = artifact.get("platform", "").title()
-            content = artifact.get("content", {})
-            text = content.get("text", "")
+            platform = (artifact.get("platform") or "").title()
+            content = (artifact.get("content") or {})
+            text = (content.get("text") or "")
 
             response_parts = [f"Here's your {platform} post:\n"]
             response_parts.append(f"\n{text}\n")
@@ -195,9 +208,9 @@ class StreamAggregatorNode:
             response_parts = [f"Generated content for {len(artifacts)} platforms:\n"]
 
             for artifact in artifacts:
-                platform = artifact.get("platform", "unknown").title()
-                content = artifact.get("content", {})
-                text = content.get("text", "")
+                platform = (artifact.get("platform") or "unknown").title()
+                content = (artifact.get("content") or {})
+                text = (content.get("text") or "")
                 preview = text[:150] + "..." if len(text) > 150 else text
 
                 response_parts.append(f"\n**{platform}:**")

@@ -67,7 +67,7 @@ class DataCheckerNode:
             # Check if user profile exists
             has_profile = state.get("user_profile") is not None
             has_brand_voice = (
-                state.get("user_profile", {}).get("brand_voice") is not None
+                (state.get("user_profile") or {}).get("brand_voice") is not None
                 if has_profile else False
             )
 

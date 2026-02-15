@@ -59,7 +59,7 @@ class MemoryRetrieverNode:
             state["user_profile"] = user_profile
 
             # Layer 3 & 4: RAG retrieval based on intent
-            intent_type = state.get("current_intent", {}).get("type", "artifact")
+            intent_type = (state.get("current_intent") or {}).get("type", "artifact")
 
             if intent_type in ["artifact", "multi_platform"]:
                 # For artifact generation, get specialized context

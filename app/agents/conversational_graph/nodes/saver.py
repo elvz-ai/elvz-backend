@@ -56,7 +56,7 @@ class MemorySaverNode:
                 await self._save_message(state)
 
             # 3. Update token usage
-            state["total_tokens_used"] += state.get("working_memory", {}).get(
+            state["total_tokens_used"] += (state.get("working_memory") or {}).get(
                 "context_tokens", 0
             )
 
@@ -68,7 +68,17 @@ class MemorySaverNode:
                 )
 
             execution_time = int((time.time() - start_time) * 1000)
-            add_execution_trace(state, "memory_saver", "completed", execution_time)
+            add_execution_trace(
+                state,
+                "memory_saver",
+                "completed",
+                execution_time,
+                metadata={
+                    "saved": True,
+                    "total_messages": len(state.get("messages", [])),
+                    "total_execution_ms": (state.get("working_memory") or {}).get("total_execution_ms", 0),
+                }
+            )
             add_stream_event(
                 state,
                 "node_completed",
@@ -109,7 +119,7 @@ class MemorySaverNode:
         # Prepare working memory update
         memory_update = {
             # Intent tracking
-            "last_intent": state.get("current_intent", {}).get("type"),
+            "last_intent": (state.get("current_intent") or {}).get("type"),
             "intent_history": state.get("intent_history", []),
             # Platform tracking
             "last_platforms": [
@@ -120,7 +130,7 @@ class MemorySaverNode:
             "last_batch_id": state.get("artifact_batch_id"),
             "artifact_count": len(state.get("artifacts", [])),
             # Context
-            "last_topic": state.get("working_memory", {}).get("shared_topic"),
+            "last_topic": (state.get("working_memory") or {}).get("shared_topic"),
             # Timestamps
             "last_updated": datetime.utcnow().isoformat(),
         }
@@ -138,7 +148,7 @@ class MemorySaverNode:
 
         # Build metadata
         metadata = {
-            "intent": state.get("current_intent", {}).get("type"),
+            "intent": (state.get("current_intent") or {}).get("type"),
             "platforms": [
                 q.get("platform")
                 for q in state.get("decomposed_queries", [])

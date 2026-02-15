@@ -355,9 +355,9 @@ class MultiPlatformOrchestratorNode:
             response = f"Here's your content for {len(artifacts)} platforms:\n\n"
 
             for artifact in artifacts:
-                platform = artifact.get("platform", "unknown").title()
-                content = artifact.get("content", {})
-                text = content.get("text", "")[:200]
+                platform = (artifact.get("platform") or "unknown").title()
+                content = (artifact.get("content") or {})
+                text = (content.get("text") or "")[:200]
 
                 response += f"**{platform}:**\n{text}...\n\n"
 

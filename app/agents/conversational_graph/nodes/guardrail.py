@@ -86,7 +86,18 @@ class GuardrailNode:
                     state["final_response"] = self._get_blocked_response(result["violations"])
 
             execution_time = int((time.time() - start_time) * 1000)
-            add_execution_trace(state, "guardrail_check", "completed", execution_time)
+            add_execution_trace(
+                state,
+                "guardrail_check",
+                "completed",
+                execution_time,
+                metadata={
+                    "guardrail_passed": state["guardrail_passed"],
+                    "guardrail_action": state["guardrail_action"],
+                    "violations": state.get("guardrail_violations", []),
+                    "enabled": self.enabled,
+                }
+            )
             add_stream_event(
                 state,
                 "node_completed",

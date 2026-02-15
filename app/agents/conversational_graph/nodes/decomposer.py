@@ -91,7 +91,7 @@ class QueryDecomposerNode:
                     DecomposedQuery(
                         platform="general",
                         query=state["current_input"],
-                        topic=intent.get("entities", {}).get("topic", ""),
+                        topic=(intent.get("entities") or {}).get("topic", ""),
                         priority=1,
                         status="pending",
                     )
@@ -115,7 +115,7 @@ class QueryDecomposerNode:
             else:
                 # Single platform artifact request
                 platform = (
-                    intent.get("entities", {}).get("platform") or
+                    (intent.get("entities") or {}).get("platform") or
                     self._extract_platform(state["current_input"]) or
                     "linkedin"  # Default platform
                 )
@@ -124,7 +124,7 @@ class QueryDecomposerNode:
                     DecomposedQuery(
                         platform=platform,
                         query=state["current_input"],
-                        topic=intent.get("entities", {}).get("topic", ""),
+                        topic=(intent.get("entities") or {}).get("topic", ""),
                         priority=1,
                         status="pending",
                     )
@@ -134,7 +134,24 @@ class QueryDecomposerNode:
             state["active_query_index"] = 0
 
             execution_time = int((time.time() - start_time) * 1000)
-            add_execution_trace(state, "query_decomposer", "completed", execution_time)
+            add_execution_trace(
+                state,
+                "query_decomposer",
+                "completed",
+                execution_time,
+                metadata={
+                    "query_count": len(state["decomposed_queries"]),
+                    "is_multi_platform": state.get("is_multi_platform", False),
+                    "platforms": [q.get("platform") for q in state["decomposed_queries"]],
+                    "queries": [
+                        {
+                            "platform": q.get("platform"),
+                            "topic": (q.get("topic") or "")[:50],  # Truncate safely
+                        }
+                        for q in state["decomposed_queries"]
+                    ],
+                }
+            )
             add_stream_event(
                 state,
                 "node_completed",
@@ -212,9 +229,9 @@ class QueryDecomposerNode:
             # Convert to DecomposedQuery objects
             decomposed = [
                 DecomposedQuery(
-                    platform=q.get("platform", "linkedin").lower(),
-                    query=q.get("query", user_query),
-                    topic=q.get("topic", result.get("shared_topic", "")),
+                    platform=(q.get("platform") or "linkedin").lower(),
+                    query=q.get("query") or user_query,
+                    topic=q.get("topic") or result.get("shared_topic") or "",
                     priority=q.get("priority", i + 1),
                     status="pending",
                 )
@@ -258,7 +275,7 @@ class QueryDecomposerNode:
         platforms = platforms[:settings.max_platforms_per_query]
 
         # Extract topic (simple heuristic)
-        topic = intent.get("entities", {}).get("topic", "")
+        topic = (intent.get("entities") or {}).get("topic", "")
 
         queries = [
             DecomposedQuery(
