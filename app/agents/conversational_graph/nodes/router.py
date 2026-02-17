@@ -60,7 +60,8 @@ class RouterNode:
                 state["working_memory"]["needs_data_check"] = False
 
             elif intent_type == "clarification":
-                route = "process_clarification"
+                # Route clarification to Q&A handler (for questions like "do you remember...")
+                route = "qa_response"
                 state["working_memory"]["route"] = route
                 state["working_memory"]["needs_data_check"] = False
 

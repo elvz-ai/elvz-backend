@@ -54,12 +54,28 @@ class MemoryRetrieverNode:
             working_memory = await memory_manager.get_working_memory(conversation_id)
             state["working_memory"].update(working_memory)
 
+            logger.info(
+                "Memory Layer 1 - Working Memory loaded",
+                conversation_id=conversation_id,
+                working_memory_keys=list(working_memory.keys()),
+                working_memory_size=len(working_memory),
+            )
+
             # Layer 2: User profile
             user_profile = await memory_manager.get_user_profile(user_id)
             state["user_profile"] = user_profile
 
+            logger.info(
+                "Memory Layer 2 - User Profile loaded",
+                user_id=user_id,
+                has_profile=user_profile is not None,
+                profile_keys=list(user_profile.keys()) if user_profile else [],
+            )
+
             # Layer 3 & 4: RAG retrieval based on intent
-            intent_type = (state.get("current_intent") or {}).get("type", "artifact")
+            intent = state.get("current_intent") or {}
+            intent_type = intent.get("type", "artifact")
+            search_modalities = intent.get("search_modalities", ["text"])
 
             if intent_type in ["artifact", "multi_platform"]:
                 # For artifact generation, get specialized context
@@ -71,6 +87,7 @@ class MemoryRetrieverNode:
                     conversation_id=conversation_id,
                     context_types=["user_history", "knowledge", "examples"],
                     platforms=platforms,
+                    modalities=search_modalities,
                 )
 
                 state["retrieved_memory"] = self._flatten_rag_results(rag_context)
@@ -82,6 +99,7 @@ class MemoryRetrieverNode:
                     user_id=user_id,
                     conversation_id=conversation_id,
                     context_types=["knowledge"],
+                    modalities=search_modalities,
                 )
 
                 state["retrieved_memory"] = self._flatten_rag_results(rag_context)
@@ -92,6 +110,24 @@ class MemoryRetrieverNode:
                 "examples": rag_context.get("examples", []),
                 "knowledge": rag_context.get("knowledge", []),
             })
+
+            logger.info(
+                "Memory Layer 3 & 4 - RAG Context retrieved",
+                intent_type=intent_type,
+                user_history_count=len(rag_context.get("user_history", [])),
+                examples_count=len(rag_context.get("examples", [])),
+                knowledge_count=len(rag_context.get("knowledge", [])),
+                rag_context_length=len(state["rag_context"]),
+                total_retrieved=len(state["retrieved_memory"]),
+            )
+
+            # Log conversation messages from state
+            messages = state.get("messages", [])
+            logger.info(
+                "Conversation Messages in state",
+                message_count=len(messages),
+                message_types=[type(m).__name__ for m in messages] if messages else [],
+            )
 
             execution_time = int((time.time() - start_time) * 1000)
             add_execution_trace(

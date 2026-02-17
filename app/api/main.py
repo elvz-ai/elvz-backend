@@ -74,6 +74,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Checkpointer initialization failed", error=str(e))
 
+    # Connect to Qdrant vector store
+    try:
+        from app.core.vector_store import vector_store
+        await vector_store.connect()
+        logger.info("Qdrant vector store connected")
+    except Exception as e:
+        logger.warning("Qdrant connection failed (RAG will be unavailable)", error=str(e))
+
     # Start execution logger
     try:
         from app.services.execution_monitor import execution_logger

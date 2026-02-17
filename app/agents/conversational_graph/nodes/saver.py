@@ -55,6 +55,10 @@ class MemorySaverNode:
             if state.get("final_response"):
                 await self._save_message(state)
 
+            # 3. Save artifacts to long-term vector memory
+            if state.get("artifacts"):
+                await self._save_to_long_term_memory(state)
+
             # 3. Update token usage
             state["total_tokens_used"] += (state.get("working_memory") or {}).get(
                 "context_tokens", 0
@@ -176,6 +180,50 @@ class MemorySaverNode:
             content=response,
             metadata=metadata,
         )
+
+    async def _save_to_long_term_memory(self, state: ConversationState) -> None:
+        """Persist generated artifacts to vector store for future retrieval."""
+        from uuid import uuid4
+        from app.core.vector_store import VectorDocument, vector_store
+
+        artifacts = state.get("artifacts", [])
+        if not artifacts:
+            return
+
+        documents = []
+        for artifact in artifacts:
+            content = artifact.get("content") or {}
+            text = content.get("text", "")
+            if not text:
+                continue
+
+            doc = VectorDocument(
+                id=artifact.get("id", str(uuid4())),
+                content=text,
+                metadata={
+                    "modality": "text",
+                    "content_type": "user_history",
+                    "user_id": state["user_id"],
+                    "platform": artifact.get("platform", "unknown"),
+                    "category": "generated_content",
+                    "conversation_id": state["conversation_id"],
+                    "created_at": datetime.utcnow().isoformat(),
+                    "engagement": {},  # To be updated later
+                    "tags": content.get("hashtags", [])[:5] if content.get("hashtags") else [],
+                },
+            )
+            documents.append(doc)
+
+        if documents:
+            try:
+                await vector_store.add_user_content(state["user_id"], documents)
+                logger.info(
+                    "Artifacts saved to long-term memory",
+                    user_id=state["user_id"],
+                    count=len(documents),
+                )
+            except Exception as e:
+                logger.error("Failed to save artifacts to vector store", error=str(e))
 
 
 # Create node instance

@@ -18,6 +18,7 @@ class IntentClassification(TypedDict, total=False):
     confidence: float
     entities: dict  # {platform, topic, action, etc.}
     reasoning: str
+    search_modalities: list[str]  # ["text", "image", "audio", "video"]
 
 
 class DecomposedQuery(TypedDict, total=False):
@@ -144,14 +145,17 @@ def create_initial_state(
     Returns:
         Initial conversation state
     """
+    from langchain_core.messages import HumanMessage
+
     return ConversationState(
         # Core identifiers
         conversation_id=conversation_id,
         user_id=user_id,
         thread_id=thread_id,
 
-        # Messages
-        messages=[],
+        # Messages - Include current user message
+        # LangGraph's add_messages reducer will merge with previous messages from checkpoint
+        messages=[HumanMessage(content=user_input)],
         current_input=user_input,
         current_message_id=None,
 

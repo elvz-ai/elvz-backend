@@ -136,8 +136,8 @@ class StreamAggregatorNode:
                 "Please rephrase your message."
             )
 
-        # Q&A response
-        if intent_type == "qa":
+        # Q&A response (includes clarification/memory questions)
+        if intent_type in ["qa", "clarification"]:
             return await self._generate_qa_response(state)
 
         # Artifact response
@@ -153,6 +153,17 @@ class StreamAggregatorNode:
         """Generate Q&A response using LLM."""
         query = state["current_input"]
         rag_context = state.get("rag_context", "")
+        conversation_history = state.get("messages", [])
+
+        # Log memory being passed
+        logger.info(
+            "QA response generation - Memory context",
+            conversation_history_count=len(conversation_history),
+            has_rag_context=bool(rag_context),
+            rag_context_length=len(rag_context) if rag_context else 0,
+            working_memory_keys=list(state.get("working_memory", {}).keys()),
+            user_profile_exists=state.get("user_profile") is not None,
+        )
 
         system_prompt = (
             "You are Elvz, an AI assistant specializing in social media content strategy "
@@ -160,17 +171,33 @@ class StreamAggregatorNode:
             "If the user seems to want content created, suggest they ask you to generate it."
         )
 
+        # Build messages with conversation history
+        messages = [LLMMessage(role="system", content=system_prompt)]
+
+        # Add conversation history (previous messages)
+        for msg in conversation_history:
+            # LangGraph BaseMessage format
+            if hasattr(msg, 'type') and hasattr(msg, 'content'):
+                role = "user" if msg.type == "human" else "assistant"
+                messages.append(LLMMessage(role=role, content=msg.content))
+
+        # Add current query with context
         user_message = query
         if rag_context:
             user_message = f"Context:\n{rag_context}\n\nUser question: {query}"
 
+        messages.append(LLMMessage(role="user", content=user_message))
+
+        logger.info(
+            "QA response - Total messages being sent to LLM",
+            total_messages=len(messages),
+            message_roles=[m.role for m in messages],
+        )
+
         try:
             response = await llm_client.generate_for_task(
                 task="response_aggregation",
-                messages=[
-                    LLMMessage(role="system", content=system_prompt),
-                    LLMMessage(role="user", content=user_message),
-                ],
+                messages=messages,
             )
             return response.content
         except Exception as e:

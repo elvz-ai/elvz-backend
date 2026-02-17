@@ -272,6 +272,16 @@ async def invoke_conversation(
     # Store execution_id in state for tracking
     initial_state["execution_id"] = execution_id
 
+    # Log initial state messages
+    logger.info(
+        "Initial state created - Memory tracking",
+        conversation_id=conversation_id,
+        thread_id=thread_id,
+        initial_messages_count=len(initial_state.get("messages", [])),
+        current_input_length=len(user_input),
+        message_types=[type(m).__name__ for m in initial_state.get("messages", [])],
+    )
+
     # Build config with thread_id for checkpointing
     invoke_config = {
         "configurable": {

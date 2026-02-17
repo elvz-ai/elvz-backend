@@ -130,12 +130,14 @@ class FollowUpGeneratorNode:
 
 User's original request: "{original_query}"
 Missing information: {missing_info}
+Detected platforms: {platforms}
 
 Generate a natural question that:
 1. Is friendly and conversational
 2. Clearly asks for the specific missing information
 3. Provides helpful examples if relevant
-4. Is concise (1-2 sentences max)
+4. If platforms include LinkedIn, Instagram, Facebook, or Twitter, ALSO ask for their social media handle
+5. Is concise (2-3 sentences max)
 
 Respond in JSON:
 {{
@@ -167,11 +169,16 @@ Respond in JSON:
             follow_up_type = state.get("follow_up_type")
             context = state.get("follow_up_context", {})
 
+            # Get platforms from decomposed queries
+            queries = state.get("decomposed_queries", [])
+            platforms = [q.get("platform", "") for q in queries if q.get("platform")]
+
             # Generate follow-up question
             question_data = await self._generate_question(
                 context.get("original_query", ""),
                 context.get("missing_info", []),
                 follow_up_type,
+                platforms,
             )
 
             state["follow_up_questions"] = [question_data.get("question", "")]
@@ -216,11 +223,14 @@ Respond in JSON:
         original_query: str,
         missing_info: list,
         follow_up_type: Optional[str],
+        platforms: list = None,
     ) -> dict:
         """Generate follow-up question using LLM."""
+        platforms = platforms or []
         prompt = self.FOLLOW_UP_PROMPT.format(
             original_query=original_query,
             missing_info=", ".join(missing_info),
+            platforms=", ".join(platforms) if platforms else "none specified",
         )
 
         messages = [
@@ -241,7 +251,10 @@ Respond in JSON:
     def _get_default_question(self, follow_up_type: Optional[str]) -> str:
         """Get default follow-up question based on type."""
         defaults = {
-            "missing_platform": "Which platform would you like me to create content for? (LinkedIn, Instagram, Facebook, Twitter)",
+            "missing_platform": (
+                "Which platform would you like me to create content for? (LinkedIn, Instagram, Facebook, Twitter)\n"
+                "Also, what's your social media handle? (e.g., @yourhandle)"
+            ),
             "missing_topic": "What topic would you like the content to be about?",
             "missing_reference": "Which previous post would you like me to modify?",
             "clarification": "Could you provide more details about what you'd like?",

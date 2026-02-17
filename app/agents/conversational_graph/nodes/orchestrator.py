@@ -93,14 +93,28 @@ class MultiPlatformOrchestratorNode:
             if not artifacts:
                 platforms = [q.get("platform", "unknown") for q in queries]
                 state["needs_follow_up"] = True
-                state["follow_up_questions"] = [
-                    f"I wasn't able to generate content for {', '.join(platforms)}. "
-                    "Could you give me more details? For example:\n"
-                    "- What topic should the post be about?\n"
-                    "- What tone do you want (professional, casual, inspirational)?\n"
-                    "- Any specific message or call-to-action to include?"
-                ]
-                state["final_response"] = state["follow_up_questions"][0]
+
+                # Build follow-up question with social handle request if applicable
+                social_platforms = [p for p in platforms if p.lower() in ["linkedin", "instagram", "facebook", "twitter"]]
+
+                follow_up = f"I wasn't able to generate content for {', '.join(platforms)}. Could you give me more details? For example:\n"
+                follow_up += "- What topic should the post be about?\n"
+                follow_up += "- What tone do you want (professional, casual, inspirational)?\n"
+                follow_up += "- Any specific message or call-to-action to include?"
+
+                # Add social handle request if platforms are social media
+                if social_platforms:
+                    platform_names = {
+                        "linkedin": "LinkedIn",
+                        "instagram": "Instagram",
+                        "facebook": "Facebook",
+                        "twitter": "Twitter/X"
+                    }
+                    platform_labels = [platform_names.get(p.lower(), p) for p in social_platforms]
+                    follow_up += f"\n- What's your {'/'.join(platform_labels)} handle? (e.g., @yourhandle)"
+
+                state["follow_up_questions"] = [follow_up]
+                state["final_response"] = follow_up
                 return state
 
             # Build final response

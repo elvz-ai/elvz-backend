@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Optional
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm.exc import DetachedInstanceError
 
 from app.core.database import Base
 
@@ -98,7 +99,10 @@ class Conversation(Base):
     @property
     def message_count(self) -> int:
         """Get total message count."""
-        return len(self.messages) if self.messages else 0
+        try:
+            return len(self.messages) if self.messages else 0
+        except DetachedInstanceError:
+            return 0
 
     def to_dict(self) -> dict:
         """Convert to dictionary for API responses."""

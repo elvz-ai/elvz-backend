@@ -46,6 +46,12 @@ Also extract any relevant entities:
 - tone: professional, casual, humorous, inspirational
 - action: create, modify, analyze, schedule
 
+Also determine which content modalities are relevant for searching context:
+- "text" - Always include for text-based queries
+- "image" - Include when user mentions images, visuals, photos, graphics, design
+- "audio" - Include when user mentions audio, podcast, voice, sound
+- "video" - Include when user mentions video, reels, stories, clips
+
 User Message: {user_message}
 
 Recent Conversation Context:
@@ -62,7 +68,8 @@ Respond in JSON format:
         "tone": "tone or null",
         "action": "action or null"
     }},
-    "reasoning": "brief explanation"
+    "reasoning": "brief explanation",
+    "search_modalities": ["text"]
 }}
 """
 
@@ -202,6 +209,7 @@ class IntentClassifierNode:
                 confidence=float(result.get("confidence", 0.8)),
                 entities=result.get("entities", {}),
                 reasoning=result.get("reasoning", ""),
+                search_modalities=result.get("search_modalities", ["text"]),
             )
 
         except json.JSONDecodeError as e:
@@ -212,6 +220,15 @@ class IntentClassifierNode:
     def _fallback_classify(self, user_message: str) -> IntentClassification:
         """Fallback classification using keyword matching."""
         message_lower = user_message.lower()
+
+        # Detect modalities
+        search_modalities = ["text"]  # Always include text
+        if any(word in message_lower for word in ["image", "visual", "photo", "graphic", "design", "picture"]):
+            search_modalities.append("image")
+        if any(word in message_lower for word in ["audio", "podcast", "voice", "sound"]):
+            search_modalities.append("audio")
+        if any(word in message_lower for word in ["video", "reel", "story", "clip"]):
+            search_modalities.append("video")
 
         # Multi-platform detection
         multi_indicators = [" and ", "all platforms", "each platform", "both"]
@@ -224,6 +241,7 @@ class IntentClassifierNode:
                 confidence=0.7,
                 entities={"platforms": [p for p in platforms if p in message_lower]},
                 reasoning="Multiple platforms detected",
+                search_modalities=search_modalities,
             )
 
         # Artifact generation
@@ -234,6 +252,7 @@ class IntentClassifierNode:
                 confidence=0.7,
                 entities={},
                 reasoning="Artifact keywords detected",
+                search_modalities=search_modalities,
             )
 
         # Question
@@ -243,6 +262,7 @@ class IntentClassifierNode:
                 confidence=0.7,
                 entities={},
                 reasoning="Question format detected",
+                search_modalities=search_modalities,
             )
 
         # Default to artifact
@@ -251,6 +271,7 @@ class IntentClassifierNode:
             confidence=0.5,
             entities={},
             reasoning="Default classification",
+            search_modalities=search_modalities,
         )
 
 

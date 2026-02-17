@@ -50,6 +50,7 @@ class RAGRetriever:
         conversation_id: Optional[str] = None,
         context_types: Optional[list[str]] = None,
         platforms: Optional[list[str]] = None,
+        modalities: Optional[list[str]] = None,
         top_k: Optional[int] = None,
         token_budget: Optional[int] = None,
     ) -> dict:
@@ -69,6 +70,7 @@ class RAGRetriever:
             Dict with retrieved context organized by type
         """
         context_types = context_types or ["knowledge", "user_history"]
+        modalities = modalities or ["text"]
         top_k = top_k or settings.memory_rag_top_k
         token_budget = token_budget or settings.memory_token_budget
 
@@ -99,6 +101,7 @@ class RAGRetriever:
                 query=search_query,
                 user_id=user_id,
                 platforms=platforms,
+                modalities=modalities,
                 top_k=top_k,
             )
 
@@ -190,6 +193,7 @@ class RAGRetriever:
         query: str,
         user_id: str,
         platforms: Optional[list[str]] = None,
+        modalities: Optional[list[str]] = None,
         top_k: int = 5,
     ) -> list[dict]:
         """
@@ -211,6 +215,7 @@ class RAGRetriever:
                 results = await vector_store.search_knowledge(
                     query=query,
                     user_id=user_id,
+                    modalities=modalities,
                     top_k=top_k,
                 )
                 return [
@@ -229,8 +234,9 @@ class RAGRetriever:
                 results = await vector_store.search_content_examples(
                     query=query,
                     user_id=user_id,
-                    top_k=top_k,
                     platform=platforms[0] if platforms else None,
+                    modalities=modalities,
+                    top_k=top_k,
                 )
                 return [
                     {
@@ -245,13 +251,10 @@ class RAGRetriever:
 
             elif ctx_type == "user_history":
                 # Search user's past content
-                filters = {}
-                if platforms:
-                    filters["platform"] = {"$in": platforms}
-
                 results = await vector_store.search_user_content(
                     query=query,
                     user_id=user_id,
+                    modalities=modalities,
                     top_k=top_k,
                 )
                 return [

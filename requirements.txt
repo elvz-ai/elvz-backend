@@ -15,6 +15,7 @@ alembic==1.13.1
 
 # Vector Database
 pinecone-client==3.0.0
+qdrant-client>=1.12.0
 # weaviate-client: optional, install separately if using Weaviate
 # pip install "weaviate-client>=4.5.0"  (conflicts with httpx otherwise)
 

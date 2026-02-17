@@ -87,12 +87,19 @@ class Settings(BaseSettings):
     vertex_vector_index_endpoint: str = ""  # Vector Search index endpoint (full resource name)
     vertex_deployed_index_id: str = ""  # Deployed index ID
     
-    # Vector Database - Pinecone
+    # Vector Database - Qdrant (Primary)
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
+    qdrant_collection_name: str = "elvz_memory"
+    qdrant_vector_size: int = 3072  # Gemini gemini-embedding-001 dimension
+    qdrant_distance: str = "Cosine"  # Cosine | Euclid | Dot
+
+    # Vector Database - Pinecone (Legacy)
     pinecone_api_key: str = ""
     pinecone_environment: str = "us-east-1"
     pinecone_index_name: str = "elvz-knowledge"
-    
-    # Vector Database - Weaviate (alternative)
+
+    # Vector Database - Weaviate (Alternative)
     weaviate_url: str = "http://localhost:8080"
     weaviate_api_key: str = ""
     
