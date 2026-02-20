@@ -98,3 +98,7 @@ pip-delete-this-directory.txt
 # AI Assistant Rules (local development only)
 rules/
 
+#Docs
+docs/
+
+

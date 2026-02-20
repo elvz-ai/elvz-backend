@@ -78,14 +78,14 @@ class MemoryRetrieverNode:
             search_modalities = intent.get("search_modalities", ["text"])
 
             if intent_type in ["artifact", "multi_platform"]:
-                # For artifact generation, get specialized context
+                # For artifact generation, get specialized context + past conversations for style
                 platforms = self._get_platforms(state)
 
                 rag_context = await rag_retriever.retrieve(
                     query=current_input,
                     user_id=user_id,
                     conversation_id=conversation_id,
-                    context_types=["user_history", "knowledge", "examples"],
+                    context_types=["social_history", "conversation"],
                     platforms=platforms,
                     modalities=search_modalities,
                 )
@@ -93,12 +93,12 @@ class MemoryRetrieverNode:
                 state["retrieved_memory"] = self._flatten_rag_results(rag_context)
 
             else:
-                # For Q&A or clarification, lighter retrieval
+                # For Q&A, clarification, modification — fetch knowledge + past conversations
                 rag_context = await rag_retriever.retrieve(
                     query=current_input,
                     user_id=user_id,
                     conversation_id=conversation_id,
-                    context_types=["knowledge"],
+                    context_types=["knowledge", "conversation"],
                     modalities=search_modalities,
                 )
 
@@ -106,9 +106,11 @@ class MemoryRetrieverNode:
 
             # Format RAG context for prompt injection
             state["rag_context"] = rag_retriever.format_context_for_prompt({
+                "social_history": rag_context.get("social_history", []),
                 "user_content": rag_context.get("user_history", []),
                 "examples": rag_context.get("examples", []),
                 "knowledge": rag_context.get("knowledge", []),
+                "conversation": rag_context.get("conversation", []),
             })
 
             logger.info(
@@ -184,7 +186,7 @@ class MemoryRetrieverNode:
         """Flatten RAG results into a single list."""
         results = []
 
-        for source_type in ["knowledge", "examples", "user_history"]:
+        for source_type in ["social_history", "knowledge", "examples", "user_history", "conversation"]:
             items = rag_context.get(source_type, [])
             for item in items:
                 item["source_type"] = source_type

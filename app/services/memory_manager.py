@@ -245,16 +245,18 @@ class MemoryManager:
         top_k = top_k or settings.memory_rag_top_k
 
         try:
-            filters = {}
-            if platform:
-                filters["platform"] = platform
+            # Fetch more results when platform filtering is needed so we have enough after filtering
+            fetch_top_k = top_k * 3 if platform else top_k
 
             results = await vector_store.search_user_content(
                 query=query,
                 user_id=user_id,
-                top_k=top_k,
-                filter_metadata=filters,
+                top_k=fetch_top_k,
             )
+
+            # Post-filter by platform if specified
+            if platform:
+                results = [r for r in results if r.metadata.get("platform") == platform][:top_k]
 
             return [
                 {

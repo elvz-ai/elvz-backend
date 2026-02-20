@@ -5,6 +5,7 @@ The main LangGraph that orchestrates the entire conversation flow,
 wrapping the existing content generation pipeline.
 """
 
+import asyncio
 from typing import Literal, Optional
 
 import structlog
@@ -42,7 +43,7 @@ def create_conversational_graph(checkpointer=None) -> StateGraph:
     ```
     Entry -> guardrail_check
         |
-        ├─[blocked]─> memory_saver -> END
+        ├─[blocked]─> stream_aggregator -> END
         |
         └─[passed]─> intent_classifier -> query_decomposer -> memory_retriever
                                                                     |
@@ -64,10 +65,10 @@ def create_conversational_graph(checkpointer=None) -> StateGraph:
                                                 └───────────────────┘
                                                           |
                                                           v
-                                                   stream_aggregator
-                                                          |
-                                                          v
-                                                     memory_saver -> END
+                                                   stream_aggregator -> END
+
+    NOTE: memory_saver runs as a fire-and-forget background task
+    after invoke_conversation() returns, to avoid blocking the HTTP response.
     ```
 
     Args:
@@ -80,6 +81,8 @@ def create_conversational_graph(checkpointer=None) -> StateGraph:
     workflow = StateGraph(ConversationState)
 
     # ==================== Add Nodes ====================
+    # NOTE: memory_saver is NOT in the graph — it runs as a background task
+    # after invoke_conversation() returns, to avoid blocking the HTTP response.
     workflow.add_node("guardrail_check", guardrail_node)
     workflow.add_node("intent_classifier", intent_classifier_node)
     workflow.add_node("query_decomposer", query_decomposer_node)
@@ -91,25 +94,24 @@ def create_conversational_graph(checkpointer=None) -> StateGraph:
     workflow.add_node("data_checker", data_checker_node)
     workflow.add_node("multi_platform_orchestrator", multi_platform_orchestrator_node)
     workflow.add_node("stream_aggregator", stream_aggregator_node)
-    workflow.add_node("memory_saver", memory_saver_node)
 
     # ==================== Set Entry Point ====================
     workflow.set_entry_point("guardrail_check")
 
     # ==================== Guardrail Routing ====================
-    def guardrail_router(state: ConversationState) -> Literal["intent_classifier", "memory_saver"]:
+    def guardrail_router(state: ConversationState) -> Literal["intent_classifier", "stream_aggregator"]:
         """Route based on guardrail check result."""
         if state.get("guardrail_passed", True):
             return "intent_classifier"
-        # Blocked content goes directly to save and end
-        return "memory_saver"
+        # Blocked content — final_response already set, skip to aggregator → END
+        return "stream_aggregator"
 
     workflow.add_conditional_edges(
         "guardrail_check",
         guardrail_router,
         {
             "intent_classifier": "intent_classifier",
-            "memory_saver": "memory_saver",
+            "stream_aggregator": "stream_aggregator",
         },
     )
 
@@ -173,16 +175,31 @@ def create_conversational_graph(checkpointer=None) -> StateGraph:
     # Follow-up generator goes to aggregator (to return question to user)
     workflow.add_edge("follow_up_generator", "stream_aggregator")
 
-    # ==================== Data Check -> Orchestrator ====================
-    workflow.add_edge("data_checker", "multi_platform_orchestrator")
+    # ==================== Data Check -> Conditional ====================
+    def data_checker_router(state: ConversationState) -> Literal[
+        "multi_platform_orchestrator", "stream_aggregator"
+    ]:
+        """Route based on social data availability."""
+        if state.get("social_not_connected", False):
+            # Skip generation — final_response already set by data_checker
+            return "stream_aggregator"
+        return "multi_platform_orchestrator"
+
+    workflow.add_conditional_edges(
+        "data_checker",
+        data_checker_router,
+        {
+            "multi_platform_orchestrator": "multi_platform_orchestrator",
+            "stream_aggregator": "stream_aggregator",
+        },
+    )
 
     # ==================== Orchestrator -> Aggregator ====================
     workflow.add_edge("multi_platform_orchestrator", "stream_aggregator")
 
     # ==================== Final Edges ====================
-    # Aggregator -> Saver -> END
-    workflow.add_edge("stream_aggregator", "memory_saver")
-    workflow.add_edge("memory_saver", END)
+    # Aggregator -> END (memory_saver runs as background task)
+    workflow.add_edge("stream_aggregator", END)
 
     # ==================== Compile Graph ====================
     if checkpointer:
@@ -243,8 +260,20 @@ async def invoke_conversation(
     """
     import time
     from uuid import uuid4
+    from langchain_core.messages import HumanMessage, AIMessage
     from app.agents.conversational_graph.state import create_initial_state
     from app.services.execution_monitor import execution_logger, ExecutionStatus
+    from app.services.memory_manager import memory_manager
+    from app.core.config import settings
+
+    # Dev user_id override
+    if settings.skip_user_id and settings.dev_user_id:
+        logger.info(
+            "Dev override: using dev_user_id",
+            original_user_id=user_id,
+            dev_user_id=settings.dev_user_id,
+        )
+        user_id = settings.dev_user_id
 
     # Generate execution ID for monitoring
     execution_id = str(uuid4())
@@ -272,6 +301,37 @@ async def invoke_conversation(
     # Store execution_id in state for tracking
     initial_state["execution_id"] = execution_id
 
+    # Load previous messages from PostgreSQL and prepend to state
+    # This gives the LLM full conversation history without relying on the checkpointer
+    try:
+        recent_messages = await memory_manager.get_recent_messages(
+            conversation_id, limit=10
+        )
+        history_messages = []
+        for msg in recent_messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                history_messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                history_messages.append(AIMessage(content=content))
+
+        if history_messages:
+            # Prepend history before the current HumanMessage
+            initial_state["messages"] = history_messages + initial_state["messages"]
+            logger.info(
+                "Conversation history loaded",
+                conversation_id=conversation_id,
+                history_count=len(history_messages),
+            )
+    except Exception as e:
+        logger.warning("Failed to load conversation history", error=str(e))
+
+    # Save user message to PostgreSQL (fire-and-forget — not needed before graph runs)
+    asyncio.create_task(_background_save_user_message(
+        conversation_id, user_input
+    ))
+
     # Log initial state messages
     logger.info(
         "Initial state created - Memory tracking",
@@ -293,13 +353,67 @@ async def invoke_conversation(
         invoke_config.update(config)
 
     try:
-        # Invoke graph
+        # Invoke graph (memory_saver is NOT in the graph — runs as background task)
         result = await graph.ainvoke(initial_state, invoke_config)
 
-        # Calculate duration
-        duration_ms = int((time.time() - start_time) * 1000)
+        # Fire memory_saver + execution logging as background tasks
+        # so the HTTP response returns immediately.
+        asyncio.create_task(_background_post_response(
+            result=result,
+            execution_id=execution_id,
+            start_time=start_time,
+            execution_logger=execution_logger,
+            ExecutionStatus=ExecutionStatus,
+        ))
 
-        # Determine status based on errors
+        return result
+
+    except Exception as e:
+        # Log failed execution (still background)
+        duration_ms = int((time.time() - start_time) * 1000)
+        execution_logger.log_execution_completed(
+            execution_id=execution_id,
+            status=ExecutionStatus.FAILED,
+            duration_ms=duration_ms,
+            error_summary=str(e),
+            failed_nodes=["unknown"],
+        )
+        raise
+
+
+async def _background_save_user_message(conversation_id: str, user_input: str) -> None:
+    """Fire-and-forget: save user message to PostgreSQL."""
+    from app.services.memory_manager import memory_manager
+
+    try:
+        await memory_manager.save_message_to_memory(
+            conversation_id=conversation_id,
+            role="user",
+            content=user_input,
+        )
+    except Exception as e:
+        logger.warning("Background: failed to save user message", error=str(e))
+
+
+async def _background_post_response(
+    result: dict,
+    execution_id: str,
+    start_time: float,
+    execution_logger,
+    ExecutionStatus,
+) -> None:
+    """Fire-and-forget: run memory_saver + log execution completion."""
+    import time
+
+    try:
+        # 1. Run memory_saver on the final state
+        await memory_saver_node(result)
+    except Exception as e:
+        logger.error("Background memory save failed", error=str(e))
+
+    try:
+        # 2. Log execution completion
+        duration_ms = int((time.time() - start_time) * 1000)
         errors = result.get("errors", [])
         failed_nodes = [
             trace["node"]
@@ -312,7 +426,6 @@ async def invoke_conversation(
         else:
             status = ExecutionStatus.COMPLETED
 
-        # Log execution completion (non-blocking)
         execution_logger.log_execution_completed(
             execution_id=execution_id,
             status=status,
@@ -323,20 +436,8 @@ async def invoke_conversation(
             failed_nodes=failed_nodes,
             start_time=start_time,
         )
-
-        return result
-
     except Exception as e:
-        # Log failed execution
-        duration_ms = int((time.time() - start_time) * 1000)
-        execution_logger.log_execution_completed(
-            execution_id=execution_id,
-            status=ExecutionStatus.FAILED,
-            duration_ms=duration_ms,
-            error_summary=str(e),
-            failed_nodes=["unknown"],
-        )
-        raise
+        logger.error("Background execution log failed", error=str(e))
 
 
 async def stream_conversation(

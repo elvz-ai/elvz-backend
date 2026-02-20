@@ -46,7 +46,6 @@ class MemorySaverNode:
 
         try:
             conversation_id = state["conversation_id"]
-            user_id = state["user_id"]
 
             # 1. Update working memory
             await self._save_working_memory(state)
@@ -146,13 +145,14 @@ class MemorySaverNode:
         )
 
     async def _save_message(self, state: ConversationState) -> None:
-        """Save assistant message to database."""
+        """Save assistant message to database and Qdrant for future retrieval."""
         conversation_id = state["conversation_id"]
         response = state.get("final_response", "")
+        intent_type = (state.get("current_intent") or {}).get("type", "")
 
         # Build metadata
         metadata = {
-            "intent": (state.get("current_intent") or {}).get("type"),
+            "intent": intent_type,
             "platforms": [
                 q.get("platform")
                 for q in state.get("decomposed_queries", [])
@@ -180,6 +180,12 @@ class MemorySaverNode:
             content=response,
             metadata=metadata,
         )
+
+        # Save conversation turns to Qdrant for semantic search in future turns
+        # All intents save the user query so context is always retrievable.
+        # For artifacts, we save a short summary instead of the full response
+        # (the full artifact content is saved separately via _save_to_long_term_memory).
+        await self._save_conversation_turn_to_vector_store(state, response, intent_type=intent_type)
 
     async def _save_to_long_term_memory(self, state: ConversationState) -> None:
         """Persist generated artifacts to vector store for future retrieval."""
@@ -224,6 +230,109 @@ class MemorySaverNode:
                 )
             except Exception as e:
                 logger.error("Failed to save artifacts to vector store", error=str(e))
+
+    async def _save_conversation_turn_to_vector_store(
+        self, state: ConversationState, response: str, intent_type: str = "qa"
+    ) -> None:
+        """
+        Embed and upsert the user query and assistant response to Qdrant.
+
+        This enables semantic search over past conversations so future turns
+        can retrieve relevant context (e.g. "what did we discuss about LinkedIn?").
+
+        Called for ALL intent types so users can always retrieve what was discussed.
+        For artifact intents, saves a short summary instead of the full response
+        (full artifact content is already saved separately via _save_to_long_term_memory).
+
+        Short messages ("ok", "yes") are skipped.
+        """
+        from uuid import uuid4
+        from app.core.config import settings
+        from app.core.vector_store import VectorDocument, vector_store
+
+        user_id = state["user_id"]
+        conversation_id = state["conversation_id"]
+        user_input = state.get("current_input", "")
+        now = datetime.utcnow().isoformat()
+        min_query_length = settings.rag_min_save_length_query
+        min_response_length = settings.rag_min_save_length_response
+
+        # For artifact intents, build a concise summary instead of saving the full response
+        # (which may be very long). The actual artifact content is stored separately.
+        is_artifact_intent = intent_type in ("artifact", "multi_platform", "modification")
+        if is_artifact_intent:
+            artifacts = state.get("artifacts", [])
+            platforms = list({
+                q.get("platform", "unknown")
+                for q in state.get("decomposed_queries", [])
+                if q.get("platform")
+            })
+            if artifacts:
+                platform_str = ", ".join(platforms) if platforms else "unknown platform"
+                save_response = (
+                    f"Generated {len(artifacts)} content piece(s) for {platform_str}. "
+                    f"User requested: {user_input[:200]}"
+                )
+            else:
+                save_response = response
+        else:
+            save_response = response
+
+        documents = []
+
+        # Save user query if it's meaningful (short questions are still searchable)
+        if len(user_input) >= min_query_length:
+            documents.append(
+                VectorDocument(
+                    id=str(uuid4()),
+                    content=user_input,
+                    metadata={
+                        "modality": "text",
+                        "content_type": "user_query",
+                        "intent_type": intent_type,
+                        "user_id": user_id,
+                        "platform": "general",
+                        "category": "conversation",
+                        "conversation_id": conversation_id,
+                        "created_at": now,
+                    },
+                )
+            )
+
+        # Save assistant response (or summary for artifacts) if meaningful
+        if len(save_response) >= min_response_length:
+            documents.append(
+                VectorDocument(
+                    id=str(uuid4()),
+                    content=save_response,
+                    metadata={
+                        "modality": "text",
+                        "content_type": "qa_response",
+                        "intent_type": intent_type,
+                        "user_id": user_id,
+                        "platform": "general",
+                        "category": "conversation",
+                        "conversation_id": conversation_id,
+                        "created_at": now,
+                    },
+                )
+            )
+
+        if not documents:
+            return
+
+        try:
+            # Use search_knowledge namespace so conversation content is found
+            # by the "conversation" context type in rag_retriever
+            await vector_store.add_knowledge(documents, category="conversation")
+            logger.info(
+                "Conversation turn saved to vector store",
+                user_id=user_id,
+                conversation_id=conversation_id,
+                docs_saved=len(documents),
+            )
+        except Exception as e:
+            logger.error("Failed to save conversation turn to vector store", error=str(e))
 
 
 # Create node instance

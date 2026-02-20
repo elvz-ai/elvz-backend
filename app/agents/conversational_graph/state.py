@@ -104,6 +104,7 @@ class ConversationState(TypedDict, total=False):
     data_available: dict  # {platform: bool}
     missing_data_platforms: list[str]
     needs_scraping: bool
+    social_not_connected: bool  # True when user has no social data at all
 
     # ==================== Artifact Generation ====================
     artifacts: list[GeneratedArtifact]
@@ -192,6 +193,7 @@ def create_initial_state(
         data_available={},
         missing_data_platforms=[],
         needs_scraping=False,
+        social_not_connected=False,
 
         # Artifacts
         artifacts=[],

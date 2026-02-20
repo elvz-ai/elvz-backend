@@ -84,7 +84,7 @@ CONTENT_USER_PROMPT = """Create a {platform} post about: {topic}
 ## Brand Context
 {brand_context}
 
-Generate engaging content aligned with the strategic direction above.
+{style_reference}Generate engaging content aligned with the strategic direction above. If style reference posts are provided above, match the user's writing style, vocabulary, and tone.
 
 Respond with valid JSON:
 {{
@@ -132,14 +132,20 @@ class ContentAgent:
         
         # Get brand context
         brand_context = self._get_brand_context(context)
-        
+
+        # Get RAG context (user's scraped social posts for style matching)
+        rag_context = context.get("rag_context", "")
+
+        # Get conversation history for modification context
+        conversation_history = context.get("conversation_history", "")
+
         # Get platform tips
         platform_tips = PLATFORM_TIPS.get(platform, PLATFORM_TIPS["linkedin"])
-        
+
         # Get content strategy from planner
         plan = state.get("plan") or {}
         content_strategy = plan.get("content_strategy") or {}
-        
+
         # Generate content using Grok
         content = await self._generate_content(
             platform=platform,
@@ -149,6 +155,8 @@ class ContentAgent:
             brand_context=brand_context,
             platform_tips=platform_tips,
             content_strategy=content_strategy,
+            rag_context=rag_context,
+            conversation_history=conversation_history,
         )
         
         return {"content": content}
@@ -181,14 +189,28 @@ class ContentAgent:
         brand_context: str,
         platform_tips: str,
         content_strategy: dict,
+        rag_context: str = "",
+        conversation_history: str = "",
     ) -> dict:
         """Generate content using Grok."""
-        
+
         content_strategy = content_strategy or {}
-        
+
         char_limit = PLATFORM_LIMITS.get(platform, 3000)
-        
-        user_prompt = CONTENT_USER_PROMPT.format(
+
+        # Build style reference section from scraped social posts
+        style_reference = ""
+        if rag_context:
+            style_reference = f"## Style Reference (User's Past Content)\n{rag_context}\n\n"
+
+        # Prepend conversation history for modification context
+        conversation_prefix = ""
+        if conversation_history:
+            conversation_prefix = (
+                f"## Recent Conversation Context\n{conversation_history}\n\n"
+            )
+
+        user_prompt = conversation_prefix + CONTENT_USER_PROMPT.format(
             platform=platform,
             topic=topic,
             char_limit=char_limit,
@@ -196,6 +218,7 @@ class ContentAgent:
             goals=", ".join(goals) if isinstance(goals, list) else goals,
             platform_tips=platform_tips,
             brand_context=brand_context,
+            style_reference=style_reference,
             target_audience=content_strategy.get("target_audience", "General audience"),
             tone=content_strategy.get("tone", "Professional"),
             key_message=content_strategy.get("key_message", f"About {topic}"),

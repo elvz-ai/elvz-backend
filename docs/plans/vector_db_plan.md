@@ -904,6 +904,72 @@ uvicorn app.api.main:app --reload
 # http://34.217.75.65:6333/dashboard
 ```
 
+
+List all collections:
+
+
+curl http://localhost:6333/collections
+Get details of a specific collection (vector size, count, config):
+
+
+curl http://localhost:6333/collections/elvz_memory
+Count points in a collection:
+
+
+curl http://localhost:6333/collections/elvz_memory/points/count \
+  -H "Content-Type: application/json" \
+  -d '{"exact": true}'
+Browse points (scroll through content):
+
+
+curl -X POST http://localhost:6333/collections/elvz_memory/points/scroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "limit": 10,
+    "with_payload": true,
+    "with_vector": false
+  }'
+Filter by user_id to see a specific user's data:
+
+
+curl -X POST http://localhost:6333/collections/elvz_memory/points/scroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "limit": 20,
+    "with_payload": true,
+    "with_vector": false,
+    "filter": {
+      "must": [
+        { "key": "user_id", "match": { "value": "dev-user-001" } }
+      ]
+    }
+  }'
+Filter by content_type (e.g. scraped posts vs conversation turns):
+
+
+curl -X POST http://localhost:6333/collections/elvz_memory/points/scroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "limit": 20,
+    "with_payload": true,
+    "with_vector": false,
+    "filter": {
+      "must": [
+        { "key": "content_type", "match": { "value": "user_history" } },
+        { "key": "platform", "match": { "value": "linkedin" } }
+      ]
+    }
+  }'
+If you have a Qdrant API key set (QDRANT_API_KEY in .env), add it to every request:
+
+
+curl http://localhost:6333/collections \
+  -H "api-key: your-api-key"
+Alternatively, use the Qdrant Web UI — it's built in and available at:
+
+
+http://localhost:6333/dashboard
+It gives you a visual browser for collections and points without needing curl.
 ---
 
 ## Pinecone → Qdrant Migration Checklist

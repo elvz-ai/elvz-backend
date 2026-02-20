@@ -19,11 +19,11 @@ from app.api.routes.conversations import router as conversations_router
 from app.api.routes.artifacts import router as artifacts_router
 from app.api.routes.chat_v2 import router as chat_v2_router
 from app.api.routes.monitoring import router as monitoring_router
+from app.api.routes.webhooks import router as webhooks_router
 from app.api.websocket import websocket_endpoint
 from app.core.config import settings
 from app.core.cache import cache
 from app.core.database import init_db, close_db
-from app.core.firebase_storage import initialize_firebase
 
 logger = structlog.get_logger(__name__)
 
@@ -51,13 +51,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Database initialization failed", error=str(e))
     
-    # Initialize Firebase Storage
-    try:
-        initialize_firebase()
-        logger.info("Firebase Storage initialized")
-    except Exception as e:
-        logger.warning("Firebase initialization failed (will retry on first request)", error=str(e))
-
     # Initialize Sentry for error tracking
     try:
         from app.core.observability import init_sentry
@@ -168,6 +161,7 @@ app.include_router(social_media_router, prefix=settings.api_v1_prefix)
 app.include_router(seo_router, prefix=settings.api_v1_prefix)
 app.include_router(copywriter_router, prefix=settings.api_v1_prefix)
 app.include_router(assistant_router, prefix=settings.api_v1_prefix)
+app.include_router(webhooks_router, prefix=settings.api_v1_prefix)
 
 
 # WebSocket endpoint

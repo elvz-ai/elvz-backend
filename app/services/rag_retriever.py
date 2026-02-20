@@ -5,6 +5,7 @@ Handles semantic search with query reformulation, token budgeting,
 and result ranking for the conversational AI.
 """
 
+import asyncio
 from typing import Optional
 
 import structlog
@@ -85,18 +86,16 @@ class RAGRetriever:
             "knowledge": [],
             "examples": [],
             "user_history": [],
+            "social_history": [],
             "total_tokens": 0,
             "sources_used": [],
         }
 
         remaining_budget = token_budget
 
-        # Search each context type
-        for ctx_type in context_types:
-            if remaining_budget <= 0:
-                break
-
-            items = await self._search_by_type(
+        # Fire all searches in parallel (instead of sequential)
+        search_coros = [
+            self._search_by_type(
                 ctx_type=ctx_type,
                 query=search_query,
                 user_id=user_id,
@@ -104,6 +103,20 @@ class RAGRetriever:
                 modalities=modalities,
                 top_k=top_k,
             )
+            for ctx_type in context_types
+        ]
+        search_outputs = await asyncio.gather(*search_coros, return_exceptions=True)
+
+        # Apply token budget sequentially (preserves priority order)
+        for ctx_type, output in zip(context_types, search_outputs):
+            if remaining_budget <= 0:
+                break
+
+            if isinstance(output, Exception):
+                logger.error(f"Parallel search failed for {ctx_type}", error=str(output))
+                continue
+
+            items = output
 
             # Apply token budget
             filtered_items, tokens_used = self._apply_token_budget(
@@ -187,6 +200,32 @@ class RAGRetriever:
 
         return query
 
+    def _get_min_score(self, ctx_type: str) -> float:
+        """Return the minimum relevance score threshold for a context type."""
+        thresholds = {
+            "knowledge": settings.rag_min_score_knowledge,
+            "examples": settings.rag_min_score_knowledge,
+            "user_history": settings.rag_min_score_user_history,
+            "social_history": settings.rag_min_score_user_history,
+            "conversation": settings.rag_min_score_conversation,
+        }
+        return thresholds.get(ctx_type, settings.rag_min_score_knowledge)
+
+    def _filter_by_score(self, results: list[dict], min_score: float, ctx_type: str) -> list[dict]:
+        """Filter results below the minimum relevance score."""
+        filtered = [r for r in results if r.get("score", 0) >= min_score]
+        dropped = len(results) - len(filtered)
+        if dropped > 0:
+            logger.info(
+                "RAG relevance filtering",
+                ctx_type=ctx_type,
+                original=len(results),
+                kept=len(filtered),
+                dropped=dropped,
+                min_score=min_score,
+            )
+        return filtered
+
     async def _search_by_type(
         self,
         ctx_type: str,
@@ -207,18 +246,19 @@ class RAGRetriever:
             top_k: Number of results
 
         Returns:
-            List of search results
+            List of search results filtered by relevance score
         """
+        min_score = self._get_min_score(ctx_type)
+
         try:
             if ctx_type == "knowledge":
-                # Search knowledge base
                 results = await vector_store.search_knowledge(
                     query=query,
                     user_id=user_id,
                     modalities=modalities,
                     top_k=top_k,
                 )
-                return [
+                items = [
                     {
                         "type": "knowledge",
                         "content": r.content,
@@ -228,9 +268,9 @@ class RAGRetriever:
                     }
                     for r in results
                 ]
+                return self._filter_by_score(items, min_score, ctx_type)
 
             elif ctx_type == "examples":
-                # Search content examples
                 results = await vector_store.search_content_examples(
                     query=query,
                     user_id=user_id,
@@ -238,7 +278,7 @@ class RAGRetriever:
                     modalities=modalities,
                     top_k=top_k,
                 )
-                return [
+                items = [
                     {
                         "type": "example",
                         "content": r.content,
@@ -248,16 +288,16 @@ class RAGRetriever:
                     }
                     for r in results
                 ]
+                return self._filter_by_score(items, min_score, ctx_type)
 
             elif ctx_type == "user_history":
-                # Search user's past content
                 results = await vector_store.search_user_content(
                     query=query,
                     user_id=user_id,
                     modalities=modalities,
                     top_k=top_k,
                 )
-                return [
+                items = [
                     {
                         "type": "user_content",
                         "content": r.content,
@@ -268,6 +308,53 @@ class RAGRetriever:
                     }
                     for r in results
                 ]
+                return self._filter_by_score(items, min_score, ctx_type)
+
+            elif ctx_type == "social_history":
+                # Search scraped social posts from social_memory_test collection
+                results = await vector_store.search_social_content(
+                    user_id=user_id,
+                    query=query,
+                    platform=platforms[0] if platforms else None,
+                    top_k=top_k,
+                )
+                items = [
+                    {
+                        "type": "social_history",
+                        "content": r.content,
+                        "score": r.score,
+                        "platform": r.metadata.get("platform"),
+                        "posted_at": r.metadata.get("posted_at"),
+                        "hashtags": r.metadata.get("hashtags", []),
+                        "engagement": r.metadata.get("engagement"),
+                        "performance_score": r.metadata.get("performance_score"),
+                    }
+                    for r in results
+                ]
+                return self._filter_by_score(items, min_score, ctx_type)
+
+            elif ctx_type == "conversation":
+                # Search past conversation turns (user queries + QA responses)
+                results = await vector_store.search_knowledge(
+                    query=query,
+                    user_id=user_id,
+                    modalities=modalities,
+                    top_k=top_k,
+                )
+                # Filter to only conversation content_types
+                items = [
+                    {
+                        "type": "conversation",
+                        "content": r.content,
+                        "score": r.score,
+                        "conversation_id": r.metadata.get("conversation_id"),
+                        "content_type": r.metadata.get("content_type"),
+                        "created_at": r.metadata.get("created_at"),
+                    }
+                    for r in results
+                    if r.metadata.get("content_type") in ("user_query", "qa_response")
+                ]
+                return self._filter_by_score(items, min_score, ctx_type)
 
             else:
                 logger.warning(f"Unknown context type: {ctx_type}")
@@ -437,7 +524,29 @@ class RAGRetriever:
         """
         parts = []
 
-        # User's past content
+        # Past conversation turns (user queries + QA responses)
+        if context.get("conversation"):
+            parts.append("=== Relevant Past Conversations ===")
+            for item in context["conversation"][:4]:
+                content_type = item.get("content_type", "conversation")
+                label = "User asked" if content_type == "user_query" else "You answered"
+                content = item.get("content", "")[:400]
+                parts.append(f"[{label}] {content}")
+            parts.append("")
+
+        # User's scraped social posts (from social_memory_test)
+        if context.get("social_history"):
+            parts.append("=== Your Past Social Media Posts (Style Reference) ===")
+            for item in context["social_history"][:5]:
+                platform = item.get("platform", "unknown")
+                content = item.get("content", "")[:500]
+                hashtags = " ".join(item.get("hashtags", [])[:5])
+                parts.append(f"[{platform}] {content}")
+                if hashtags:
+                    parts.append(f"  Tags: {hashtags}")
+            parts.append("")
+
+        # User's past content (from elvz_memory)
         if context.get("user_content"):
             parts.append("=== Your Past Content (Style Reference) ===")
             for item in context["user_content"][:5]:

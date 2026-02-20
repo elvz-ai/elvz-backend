@@ -165,17 +165,26 @@ class StreamAggregatorNode:
             user_profile_exists=state.get("user_profile") is not None,
         )
 
+        # Inject brand voice into system prompt if available
+        brand_voice_section = ""
+        profile = state.get("user_profile") or {}
+        if profile.get("brand_voice_context"):
+            brand_voice_section = f"\n\nUser's brand voice:\n{profile['brand_voice_context']}"
+
         system_prompt = (
             "You are Elvz, an AI assistant specializing in social media content strategy "
-            "and creation. Answer the user's question helpfully and concisely. "
+            "and creation. You have full access to the current conversation history in the "
+            "messages below — use it to recall what was discussed and maintain continuity.\n\n"
+            "Answer the user's question helpfully and concisely. "
             "If the user seems to want content created, suggest they ask you to generate it."
+            + brand_voice_section
         )
 
         # Build messages with conversation history
         messages = [LLMMessage(role="system", content=system_prompt)]
 
-        # Add conversation history (previous messages)
-        for msg in conversation_history:
+        # Add conversation history (previous messages, skip the last/current HumanMessage)
+        for msg in conversation_history[:-1]:
             # LangGraph BaseMessage format
             if hasattr(msg, 'type') and hasattr(msg, 'content'):
                 role = "user" if msg.type == "human" else "assistant"

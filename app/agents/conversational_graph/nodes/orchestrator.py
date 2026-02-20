@@ -244,24 +244,37 @@ class MultiPlatformOrchestratorNode:
             elf = await self._get_elf()
 
             # Build request for Elf
+            working_memory = state.get("working_memory") or {}
             elf_request = {
                 "topic": topic,
                 "platform": platform,
                 "content_type": "thought_leadership",
                 "message": query.get("query", state["current_input"]),
+                "shared_topic": working_memory.get("shared_topic", ""),
+                "shared_tone": working_memory.get("shared_tone", ""),
             }
 
             # Build context for Elf
             context = {
                 "user_id": state["user_id"],
-                "image": False,  # Can be enabled based on user preferences
-                "video": False,
+                "image": settings.enable_visual_generation,
+                "video": settings.enable_video_generation,
                 "brand_info": self._get_brand_info(state),
             }
 
             # Add RAG context if available
             if state.get("rag_context"):
                 context["rag_context"] = state["rag_context"]
+
+            # Add recent conversation history for modification context
+            recent_messages = state.get("messages", [])[-6:]  # last 3 turns
+            conversation_summary = []
+            for msg in recent_messages:
+                if hasattr(msg, "type") and hasattr(msg, "content"):
+                    role = "User" if msg.type == "human" else "Assistant"
+                    conversation_summary.append(f"{role}: {(msg.content or '')[:200]}")
+            if conversation_summary:
+                context["conversation_history"] = "\n".join(conversation_summary)
 
             # Execute Elf
             result = await elf.execute(elf_request, context)
@@ -297,13 +310,33 @@ class MultiPlatformOrchestratorNode:
 
     def _extract_content(self, result: dict) -> dict:
         """Extract content from Elf result."""
-        # Handle different result structures
         if not result:
             return {}
 
         content = {}
 
-        # Direct content
+        # Primary path: SocialMediaManagerElf returns post_variations
+        variations = result.get("post_variations", [])
+        if variations:
+            variation = variations[0]  # Use the first (optimized) variation
+            raw_content = variation.get("content") or {}
+
+            # ContentAgent stores the post under "post_text"; map to "text"
+            content["text"] = raw_content.get("post_text") or raw_content.get("text", "")
+            content["hook"] = raw_content.get("hook", "")
+            content["cta"] = raw_content.get("cta", "")
+
+            # Hashtags live on the variation, not inside content
+            hashtag_list = variation.get("hashtags", [])
+            content["hashtags"] = [
+                h.get("tag", h) if isinstance(h, dict) else h
+                for h in hashtag_list
+            ]
+            content["schedule"] = variation.get("posting_schedule") or {}
+            content["visual_recommendations"] = variation.get("visual_recommendations", [])
+            return content
+
+        # Fallback: direct keys at result root
         if "content" in result:
             content.update(result["content"])
         elif "final_output" in result:
@@ -311,12 +344,10 @@ class MultiPlatformOrchestratorNode:
             if isinstance(output, dict):
                 content.update(output)
 
-        # Extract specific fields
         content.setdefault("text", result.get("post_text", ""))
         content.setdefault("hashtags", result.get("hashtags", []))
         content.setdefault("schedule", result.get("timing", {}))
 
-        # Visual content
         if "visual_advice" in result:
             content["visual"] = result["visual_advice"]
 
