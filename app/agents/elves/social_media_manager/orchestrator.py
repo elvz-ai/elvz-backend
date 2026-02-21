@@ -119,6 +119,9 @@ class SocialMediaManagerElf(BaseElf):
             "final_output": None,
             "errors": [],
             "execution_trace": [],
+            # Modification fields — populated when route == "modification"
+            "previous_content": enriched_request.get("previous_content", ""),
+            "modification_feedback": enriched_request.get("modification_feedback", ""),
         }
         
         logger.info(

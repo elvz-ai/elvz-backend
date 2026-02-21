@@ -51,6 +51,21 @@ class FollowUpDetectorNode:
             entities = intent.get("entities", {})
             intent_type = intent.get("type", "artifact")
 
+            # If router already flagged ambiguous_artifact, preserve that decision
+            if state.get("follow_up_type") == "ambiguous_artifact":
+                state["needs_follow_up"] = True
+                execution_time = int((time.time() - start_time) * 1000)
+                add_execution_trace(
+                    state, "follow_up_detector", "completed", execution_time,
+                    metadata={"needs_follow_up": True, "type": "ambiguous_artifact"},
+                )
+                add_stream_event(
+                    state, "node_completed",
+                    content={"needs_follow_up": True}, node="follow_up_detector",
+                )
+                logger.info("Follow-up preserved: ambiguous_artifact from router")
+                return state
+
             # Check for missing required information
             needs_follow_up = False
             follow_up_type = None
@@ -126,6 +141,21 @@ class FollowUpGeneratorNode:
     Generates natural follow-up questions when needed.
     """
 
+    AMBIGUOUS_ARTIFACT_PROMPT = """The user wants to modify a previous post, but it's unclear which one.
+They said: "{original_query}"
+
+Available posts:
+{artifact_list}
+
+Generate a friendly, concise question asking which post they want to modify.
+List the options with numbers. Keep it to 2-3 sentences.
+
+Respond in JSON:
+{{
+    "question": "the follow-up question",
+    "options": ["option1", "option2"]
+}}"""
+
     FOLLOW_UP_PROMPT = """Generate a friendly, concise follow-up question to get the missing information.
 
 User's original request: "{original_query}"
@@ -173,12 +203,16 @@ Respond in JSON:
             queries = state.get("decomposed_queries", [])
             platforms = [q.get("platform", "") for q in queries if q.get("platform")]
 
+            # Extract artifact options for ambiguous_artifact follow-ups
+            artifact_options = context.get("artifact_options", [])
+
             # Generate follow-up question
             question_data = await self._generate_question(
                 context.get("original_query", ""),
                 context.get("missing_info", []),
                 follow_up_type,
                 platforms,
+                artifact_options=artifact_options,
             )
 
             state["follow_up_questions"] = [question_data.get("question", "")]
@@ -224,14 +258,25 @@ Respond in JSON:
         missing_info: list,
         follow_up_type: Optional[str],
         platforms: list = None,
+        artifact_options: list = None,
     ) -> dict:
         """Generate follow-up question using LLM."""
         platforms = platforms or []
-        prompt = self.FOLLOW_UP_PROMPT.format(
-            original_query=original_query,
-            missing_info=", ".join(missing_info),
-            platforms=", ".join(platforms) if platforms else "none specified",
-        )
+
+        if follow_up_type == "ambiguous_artifact" and artifact_options:
+            artifact_list = "\n".join(
+                f"{i + 1}. {opt}" for i, opt in enumerate(artifact_options)
+            )
+            prompt = self.AMBIGUOUS_ARTIFACT_PROMPT.format(
+                original_query=original_query,
+                artifact_list=artifact_list,
+            )
+        else:
+            prompt = self.FOLLOW_UP_PROMPT.format(
+                original_query=original_query,
+                missing_info=", ".join(missing_info),
+                platforms=", ".join(platforms) if platforms else "none specified",
+            )
 
         messages = [
             LLMMessage(
@@ -257,6 +302,7 @@ Respond in JSON:
             ),
             "missing_topic": "What topic would you like the content to be about?",
             "missing_reference": "Which previous post would you like me to modify?",
+            "ambiguous_artifact": "I've generated several posts recently. Which one would you like me to modify?",
             "clarification": "Could you provide more details about what you'd like?",
         }
         return defaults.get(follow_up_type, "Could you provide more details?")

@@ -167,6 +167,10 @@ class Settings(BaseSettings):
     memory_rag_top_k: int = 5  # Top K for RAG retrieval
     memory_token_budget: int = 6000  # Max tokens for context
 
+    # Artifact History Settings
+    artifact_history_max_size: int = 10                   # Max artifacts in history ring buffer
+    modification_confidence_threshold: float = 0.7        # Below this, ask follow-up to disambiguate
+
     # RAG Relevance Score Thresholds (0.0 - 1.0 cosine similarity)
     # Results below these scores are filtered out as irrelevant noise
     rag_min_score_knowledge: float = 0.60    # General best practices - lower bar acceptable

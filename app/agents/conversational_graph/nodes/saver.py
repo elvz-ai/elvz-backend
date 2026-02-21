@@ -47,6 +47,9 @@ class MemorySaverNode:
         try:
             conversation_id = state["conversation_id"]
 
+            # 0. Append new artifacts to history ring buffer (before persisting)
+            self._append_to_artifact_history(state)
+
             # 1. Update working memory
             await self._save_working_memory(state)
 
@@ -132,6 +135,11 @@ class MemorySaverNode:
             # Artifact tracking
             "last_batch_id": state.get("artifact_batch_id"),
             "artifact_count": len(state.get("artifacts", [])),
+            "last_artifact": state.get("last_artifact"),  # Persist for cross-turn modification
+            # Artifact history ring buffer (for multi-artifact modification resolution)
+            "artifact_history": state.get("artifact_history", []),
+            # Pending modification context (survives across turns for follow-up flow)
+            "pending_modification": state.get("pending_modification"),
             # Context
             "last_topic": (state.get("working_memory") or {}).get("shared_topic"),
             # Timestamps
@@ -143,6 +151,33 @@ class MemorySaverNode:
             memory_update,
             merge=True,
         )
+
+    def _append_to_artifact_history(self, state: ConversationState) -> None:
+        """Append newly generated artifacts to the history ring buffer."""
+        from app.core.config import settings
+
+        artifacts = state.get("artifacts", [])
+        if not artifacts:
+            return
+
+        history = list(state.get("artifact_history") or [])
+
+        for artifact in artifacts:
+            content = artifact.get("content") or {}
+            text = content.get("text") or ""
+            entry = {
+                **artifact,
+                "topic_summary": text[:80] if text else "untitled",
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            history.append(entry)
+
+        # Cap at max size (keep most recent)
+        max_size = settings.artifact_history_max_size
+        if len(history) > max_size:
+            history = history[-max_size:]
+
+        state["artifact_history"] = history
 
     async def _save_message(self, state: ConversationState) -> None:
         """Save assistant message to database and Qdrant for future retrieval."""

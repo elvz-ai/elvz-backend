@@ -54,6 +54,18 @@ class MemoryRetrieverNode:
             working_memory = await memory_manager.get_working_memory(conversation_id)
             state["working_memory"].update(working_memory)
 
+            # Restore last_artifact from working memory for cross-turn modification support
+            if not state.get("last_artifact") and working_memory.get("last_artifact"):
+                state["last_artifact"] = working_memory["last_artifact"]
+
+            # Restore artifact_history from working memory
+            if not state.get("artifact_history") and working_memory.get("artifact_history"):
+                state["artifact_history"] = working_memory["artifact_history"]
+
+            # Restore pending_modification context (user was asked "which artifact?")
+            if working_memory.get("pending_modification"):
+                state["pending_modification"] = working_memory["pending_modification"]
+
             logger.info(
                 "Memory Layer 1 - Working Memory loaded",
                 conversation_id=conversation_id,

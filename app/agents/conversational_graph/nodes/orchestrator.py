@@ -60,7 +60,28 @@ class MultiPlatformOrchestratorNode:
         add_stream_event(state, "node_started", node="multi_platform_orchestrator")
 
         try:
-            queries = state.get("decomposed_queries", [])
+            # Determine if this is a modification request
+            is_modification = (
+                (state.get("current_intent") or {}).get("type") == "modification"
+                or (state.get("working_memory") or {}).get("route") == "modification"
+            )
+
+            # For modifications, use resolved target_artifact (falling back to last_artifact)
+            modification_source = state.get("target_artifact") or state.get("last_artifact")
+            if is_modification and modification_source:
+                last = modification_source
+                platform = last.get("platform") or "linkedin"
+                queries = [{
+                    "platform": platform,
+                    "query": state.get("current_input", ""),
+                    "topic": (last.get("content") or {}).get("text", "")[:100],
+                    "priority": 1,
+                    "status": "pending",
+                }]
+                state["decomposed_queries"] = queries
+                logger.info("Modification: overriding queries to last artifact platform", platform=platform)
+            else:
+                queries = state.get("decomposed_queries", [])
 
             if not queries:
                 logger.warning("No queries to process")
@@ -83,6 +104,10 @@ class MultiPlatformOrchestratorNode:
                 artifacts = await self._generate_sequential(state, queries, batch_id)
 
             state["artifacts"] = artifacts
+
+            # Track the most recently generated artifact for modification reference
+            if artifacts:
+                state["last_artifact"] = artifacts[-1]
 
             # Organize by platform
             state["artifacts_by_platform"] = {
@@ -245,6 +270,10 @@ class MultiPlatformOrchestratorNode:
 
             # Build request for Elf
             working_memory = state.get("working_memory") or {}
+            is_modification = (
+                (state.get("current_intent") or {}).get("type") == "modification"
+                or (state.get("working_memory") or {}).get("route") == "modification"
+            )
             elf_request = {
                 "topic": topic,
                 "platform": platform,
@@ -253,6 +282,16 @@ class MultiPlatformOrchestratorNode:
                 "shared_topic": working_memory.get("shared_topic", ""),
                 "shared_tone": working_memory.get("shared_tone", ""),
             }
+
+            # For modifications, attach the original post and user's feedback
+            mod_source = state.get("target_artifact") or state.get("last_artifact")
+            if is_modification and mod_source:
+                elf_request["previous_content"] = (
+                    (mod_source.get("content") or {}).get("text", "")
+                )
+                elf_request["modification_feedback"] = (
+                    state.get("modification_feedback") or state.get("current_input", "")
+                )
 
             # Build context for Elf
             context = {

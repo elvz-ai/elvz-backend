@@ -111,6 +111,11 @@ class ConversationState(TypedDict, total=False):
     artifact_batch_id: Optional[str]
     artifacts_by_platform: dict  # {platform: artifact}
     generation_progress: dict  # {platform: progress_pct}
+    last_artifact: Optional[dict]         # Most recently generated artifact (for modification)
+    modification_feedback: Optional[str]  # User's raw modification instruction
+    artifact_history: list[dict]           # Ring buffer of recent artifacts (max 10)
+    target_artifact: Optional[dict]        # Resolved artifact for current modification
+    pending_modification: Optional[dict]   # Cross-turn context when awaiting artifact selection
 
     # ==================== Streaming & Events ====================
     stream_events: list[StreamEvent]
@@ -200,6 +205,11 @@ def create_initial_state(
         artifact_batch_id=None,
         artifacts_by_platform={},
         generation_progress={},
+        last_artifact=None,
+        modification_feedback=None,
+        artifact_history=[],
+        target_artifact=None,
+        pending_modification=None,
 
         # Streaming
         stream_events=[],
