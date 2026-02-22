@@ -42,6 +42,7 @@ env/
 .env.example
 .env.*.local
 *.env
+.env.prod
 
 # Testing
 .tox/

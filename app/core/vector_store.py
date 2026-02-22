@@ -75,11 +75,13 @@ class EmbeddingService:
     async def embed(self, text: str) -> list[float]:
         """Generate embedding for a single text."""
         if self.provider == "gemini":
+            import asyncio
             import google.generativeai as genai
-            result = genai.embed_content(
+            result = await asyncio.to_thread(
+                genai.embed_content,
                 model=self.model,
                 content=text,
-                task_type="retrieval_query"
+                task_type="retrieval_query",
             )
             return result['embedding']
         else:
@@ -88,20 +90,23 @@ class EmbeddingService:
                 input=text,
             )
             return response.data[0].embedding
-    
+
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts."""
         if self.provider == "gemini":
+            import asyncio
             import google.generativeai as genai
-            embeddings = []
-            for text in texts:
-                result = genai.embed_content(
+            tasks = [
+                asyncio.to_thread(
+                    genai.embed_content,
                     model=self.model,
                     content=text,
-                    task_type="retrieval_document"
+                    task_type="retrieval_document",
                 )
-                embeddings.append(result['embedding'])
-            return embeddings
+                for text in texts
+            ]
+            results = await asyncio.gather(*tasks)
+            return [r['embedding'] for r in results]
         else:
             response = await self.client.embeddings.create(
                 model=self.model,

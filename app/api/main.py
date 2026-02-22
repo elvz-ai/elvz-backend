@@ -5,7 +5,7 @@ FastAPI application main entry point.
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
@@ -99,6 +99,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Execution logger shutdown failed", error=str(e))
 
+    # Disconnect Qdrant vector store
+    try:
+        from app.core.vector_store import vector_store
+        await vector_store.disconnect()
+        logger.info("Qdrant vector store disconnected")
+    except Exception as e:
+        logger.warning("Qdrant disconnect failed", error=str(e))
+
+    # Close LangGraph checkpointer
+    try:
+        from app.core.checkpointer import close_checkpointer
+        await close_checkpointer()
+        logger.info("Checkpointer closed")
+    except Exception as e:
+        logger.warning("Checkpointer close failed", error=str(e))
+
     await cache.disconnect()
     await close_db()
 
@@ -147,8 +163,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
 # Include API routes
@@ -166,8 +182,12 @@ app.include_router(webhooks_router, prefix=settings.api_v1_prefix)
 
 # WebSocket endpoint
 @app.websocket("/ws/stream/{client_id}")
-async def ws_stream(websocket: WebSocket, client_id: str):
-    """WebSocket endpoint for real-time agent updates."""
+async def ws_stream(websocket: WebSocket, client_id: str, api_key: str = Query(...)):
+    """WebSocket endpoint for real-time agent updates with API key auth."""
+    # Validate API key (skip in dev if not configured)
+    if settings.elvz_api_key and api_key != settings.elvz_api_key:
+        await websocket.close(code=4001, reason="Invalid API key")
+        return
     await websocket_endpoint(websocket, client_id)
 
 

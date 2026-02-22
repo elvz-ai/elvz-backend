@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user_id
+from app.core.config import settings
 from app.services.conversation_service import conversation_service
 
 logger = structlog.get_logger(__name__)
@@ -73,7 +74,8 @@ async def list_conversations(
         
     except Exception as e:
         logger.error("Failed to list conversations", error=str(e), user_id=user_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        detail = str(e) if settings.environment == "development" else "Internal server error"
+        raise HTTPException(status_code=500, detail=detail)
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetailResponse)
@@ -125,7 +127,8 @@ async def get_conversation(
             error=str(e),
             conversation_id=conversation_id,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        detail = str(e) if settings.environment == "development" else "Internal server error"
+        raise HTTPException(status_code=500, detail=detail)
 
 
 @router.delete("/{conversation_id}")
@@ -175,7 +178,8 @@ async def delete_conversation(
             error=str(e),
             conversation_id=conversation_id,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        detail = str(e) if settings.environment == "development" else "Internal server error"
+        raise HTTPException(status_code=500, detail=detail)
 
 
 @router.post("/{conversation_id}/messages")
@@ -222,7 +226,8 @@ async def add_message(
             error=str(e),
             conversation_id=conversation_id,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        detail = str(e) if settings.environment == "development" else "Internal server error"
+        raise HTTPException(status_code=500, detail=detail)
 
 
 @router.get("/{conversation_id}/summary")
@@ -272,4 +277,5 @@ async def get_conversation_summary(
             error=str(e),
             conversation_id=conversation_id,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        detail = str(e) if settings.environment == "development" else "Internal server error"
+        raise HTTPException(status_code=500, detail=detail)

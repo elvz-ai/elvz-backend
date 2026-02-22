@@ -155,8 +155,8 @@ class ConversationService:
                 if conv:
                     return conv
 
-            # Create new conversation
-            conv_id = str(uuid.uuid4())
+            # Create new conversation (use provided ID or generate one)
+            conv_id = conversation_id or str(uuid.uuid4())
             thread_id = str(uuid.uuid4())
             conv = Conversation(
                 id=conv_id,

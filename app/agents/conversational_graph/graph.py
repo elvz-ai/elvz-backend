@@ -33,6 +33,7 @@ logger = structlog.get_logger(__name__)
 
 # Global graph instance
 _graph = None
+_graph_lock = asyncio.Lock()
 
 
 def create_conversational_graph(checkpointer=None) -> StateGraph:
@@ -222,18 +223,22 @@ async def get_conversational_graph(checkpointer=None):
     """
     global _graph
 
-    if _graph is None:
-        # Get checkpointer if not provided
-        if checkpointer is None:
-            try:
-                from app.core.checkpointer import get_checkpointer
-                checkpointer = await get_checkpointer()
-            except Exception as e:
-                logger.warning(f"Could not initialize checkpointer: {e}")
-                checkpointer = None
+    if _graph is not None:
+        return _graph
 
-        _graph = create_conversational_graph(checkpointer)
-        logger.info("Conversational graph initialized")
+    async with _graph_lock:
+        if _graph is None:
+            # Get checkpointer if not provided
+            if checkpointer is None:
+                try:
+                    from app.core.checkpointer import get_checkpointer
+                    checkpointer = await get_checkpointer()
+                except Exception as e:
+                    logger.warning(f"Could not initialize checkpointer: {e}")
+                    checkpointer = None
+
+            _graph = create_conversational_graph(checkpointer)
+            logger.info("Conversational graph initialized")
 
     return _graph
 
@@ -438,6 +443,162 @@ async def _background_post_response(
         )
     except Exception as e:
         logger.error("Background execution log failed", error=str(e))
+
+
+# ---------------------------------------------------------------------------
+# 4-stage mapping for SSE streaming
+# ---------------------------------------------------------------------------
+NODE_TO_STAGE: dict[str, tuple[int, str]] = {
+    "guardrail_check":              (1, "Understanding your request..."),
+    "intent_classifier":            (1, "Understanding your request..."),
+    "query_decomposer":             (1, "Understanding your request..."),
+    "memory_retriever":             (2, "Preparing context..."),
+    "context_builder":              (2, "Preparing context..."),
+    "router":                       (2, "Preparing context..."),
+    "follow_up_detector":           (2, "Preparing context..."),
+    "data_checker":                 (2, "Preparing context..."),
+    "multi_platform_orchestrator":  (3, "Generating content..."),
+    "follow_up_generator":          (3, "Generating content..."),
+    "stream_aggregator":            (4, "Finalizing response..."),
+}
+
+TOTAL_STAGES = 4
+
+
+async def stream_conversation_sse(
+    conversation_id: str,
+    user_id: str,
+    thread_id: str,
+    user_input: str,
+    event_bus: "EventBus",
+    config: Optional[dict] = None,
+) -> ConversationState:
+    """
+    Run the conversational graph with SSE streaming via event_bus.
+
+    Combines graph.astream() (node-level events) with event_bus
+    (token-level events pushed by nodes mid-execution).
+
+    The event_bus is injected into LangGraph config so nodes can access it.
+    """
+    import time
+    from uuid import uuid4
+    from langchain_core.messages import HumanMessage, AIMessage
+    from app.agents.conversational_graph.state import create_initial_state
+    from app.services.execution_monitor import execution_logger, ExecutionStatus
+    from app.services.memory_manager import memory_manager
+    from app.core.config import settings
+
+    # Dev user_id override
+    if settings.skip_user_id and settings.dev_user_id:
+        user_id = settings.dev_user_id
+
+    execution_id = str(uuid4())
+    start_time = time.time()
+
+    execution_logger.log_execution_started(
+        execution_id=execution_id,
+        conversation_id=conversation_id,
+        user_id=user_id,
+        request_message=user_input,
+    )
+
+    graph = await get_conversational_graph()
+
+    initial_state = create_initial_state(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        thread_id=thread_id,
+        user_input=user_input,
+    )
+    initial_state["execution_id"] = execution_id
+
+    # Load conversation history (same as invoke_conversation)
+    try:
+        recent_messages = await memory_manager.get_recent_messages(
+            conversation_id, limit=10
+        )
+        history_messages = []
+        for msg in recent_messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                history_messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                history_messages.append(AIMessage(content=content))
+        if history_messages:
+            initial_state["messages"] = history_messages + initial_state["messages"]
+    except Exception as e:
+        logger.warning("Failed to load conversation history", error=str(e))
+
+    asyncio.create_task(_background_save_user_message(conversation_id, user_input))
+
+    # Inject event_bus into LangGraph config so nodes can access it
+    invoke_config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "event_bus": event_bus,
+        }
+    }
+    if config:
+        invoke_config.update(config)
+
+    final_state = None
+    last_stage = 0
+
+    try:
+        async for event in graph.astream(initial_state, invoke_config):
+            for node_name, node_output in event.items():
+                if node_name == "__end__":
+                    continue
+
+                # Emit step event only when stage changes
+                stage_info = NODE_TO_STAGE.get(node_name)
+                if stage_info:
+                    stage_num, stage_label = stage_info
+                    if stage_num > last_stage:
+                        event_bus.push_step(
+                            node=node_name,
+                            status="completed",
+                            stage=stage_num,
+                            label=stage_label,
+                            progress=round(stage_num / TOTAL_STAGES, 2),
+                        )
+                        last_stage = stage_num
+
+                # Forward artifacts immediately
+                if isinstance(node_output, dict):
+                    for artifact in node_output.get("artifacts", []):
+                        event_bus.push("artifact", **artifact)
+
+                    final_state = node_output
+
+    except Exception as e:
+        event_bus.push("error", message=str(e))
+        logger.error("Streaming graph execution failed", error=str(e))
+        duration_ms = int((time.time() - start_time) * 1000)
+        execution_logger.log_execution_completed(
+            execution_id=execution_id,
+            status=ExecutionStatus.FAILED,
+            duration_ms=duration_ms,
+            error_summary=str(e),
+            failed_nodes=["unknown"],
+        )
+        raise
+    finally:
+        event_bus.done()  # Always signal completion
+
+    # Background: memory save + execution logging
+    if final_state:
+        asyncio.create_task(_background_post_response(
+            result=final_state,
+            execution_id=execution_id,
+            start_time=start_time,
+            execution_logger=execution_logger,
+            ExecutionStatus=ExecutionStatus,
+        ))
+
+    return final_state
 
 
 async def stream_conversation(

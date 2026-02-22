@@ -3,6 +3,7 @@ LangGraph Checkpointer for conversation state persistence.
 Uses PostgreSQL for durable state storage across sessions.
 """
 
+import asyncio
 from typing import Optional
 
 import structlog
@@ -14,6 +15,7 @@ logger = structlog.get_logger(__name__)
 
 # Global checkpointer instance
 _checkpointer: Optional[AsyncPostgresSaver] = None
+_init_lock = asyncio.Lock()
 
 
 def _get_sync_connection_string() -> str:
@@ -37,25 +39,29 @@ async def get_checkpointer() -> AsyncPostgresSaver:
     """
     global _checkpointer
 
-    if _checkpointer is None:
-        connection_string = _get_sync_connection_string()
+    if _checkpointer is not None:
+        return _checkpointer
 
-        try:
-            _checkpointer = AsyncPostgresSaver.from_conn_string(connection_string)
-            await _checkpointer.setup()
+    async with _init_lock:
+        if _checkpointer is None:
+            connection_string = _get_sync_connection_string()
 
-            logger.info(
-                "LangGraph checkpointer initialized",
-                host=settings.postgres_host,
-                database=settings.postgres_database,
-            )
-        except Exception as e:
-            logger.error(
-                "Failed to initialize checkpointer",
-                error=str(e),
-                host=settings.postgres_host,
-            )
-            raise
+            try:
+                _checkpointer = AsyncPostgresSaver.from_conn_string(connection_string)
+                await _checkpointer.setup()
+
+                logger.info(
+                    "LangGraph checkpointer initialized",
+                    host=settings.postgres_host,
+                    database=settings.postgres_database,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to initialize checkpointer",
+                    error=str(e),
+                    host=settings.postgres_host,
+                )
+                raise
 
     return _checkpointer
 

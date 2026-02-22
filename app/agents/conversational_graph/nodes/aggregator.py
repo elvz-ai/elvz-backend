@@ -203,15 +203,39 @@ class StreamAggregatorNode:
             message_roles=[m.role for m in messages],
         )
 
+        # Check for event_bus from LangGraph config context
+        event_bus = None
         try:
-            response = await llm_client.generate_for_task(
-                task="response_aggregation",
-                messages=messages,
-            )
-            return response.content
-        except Exception as e:
-            logger.error("LLM Q&A generation failed", error=str(e))
-            return "I'm having trouble generating a response right now. Please try again."
+            from langchain_core.runnables.config import get_config
+            cfg = get_config()
+            event_bus = (cfg.get("configurable") or {}).get("event_bus")
+        except Exception:
+            pass  # Not in a streaming context
+
+        if event_bus:
+            # Token streaming path
+            chunks = []
+            try:
+                async for chunk in llm_client.stream_generate(messages=messages):
+                    chunks.append(chunk)
+                    event_bus.push_token(chunk, node="stream_aggregator")
+                return "".join(chunks)
+            except Exception as e:
+                logger.error("Streaming QA generation failed", error=str(e))
+                if chunks:
+                    return "".join(chunks)
+                return "I'm having trouble generating a response right now. Please try again."
+        else:
+            # Blocking path (existing behavior for POST /chat/v2)
+            try:
+                response = await llm_client.generate_for_task(
+                    task="response_aggregation",
+                    messages=messages,
+                )
+                return response.content
+            except Exception as e:
+                logger.error("LLM Q&A generation failed", error=str(e))
+                return "I'm having trouble generating a response right now. Please try again."
 
     def _format_artifact_response(self, state: ConversationState) -> str:
         """Format response with artifact information."""

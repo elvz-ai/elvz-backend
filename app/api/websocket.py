@@ -183,7 +183,7 @@ async def handle_streaming_chat(client_id: str, data: dict) -> None:
     except Exception as e:
         await manager.send_message(client_id, {
             "type": "error",
-            "message": str(e),
+            "message": str(e) if settings.environment == "development" else "Internal server error",
         })
 
 
@@ -234,20 +234,19 @@ async def handle_streaming_execute(client_id: str, data: dict) -> None:
     except Exception as e:
         await manager.send_message(client_id, {
             "type": "error",
-            "message": str(e),
+            "message": str(e) if settings.environment == "development" else "Internal server error",
         })
 
 
 async def handle_conversational_chat(client_id: str, data: dict) -> None:
     """
-    Handle chat request using the new conversational graph.
+    Handle chat request using the conversational graph with full streaming.
 
-    Provides rich streaming events during graph execution.
+    Uses EventBus for real-time step + token streaming via WebSocket.
     """
     user_id = data.get("user_id", "anonymous")
     message = data.get("message", "")
     conversation_id = data.get("conversation_id")
-    context = data.get("context", {})
 
     # Send start event
     await manager.send_message(client_id, {
@@ -258,7 +257,8 @@ async def handle_conversational_chat(client_id: str, data: dict) -> None:
 
     try:
         from app.services.conversation_service import conversation_service
-        from app.agents.conversational_graph.graph import stream_conversation
+        from app.agents.conversational_graph.graph import stream_conversation_sse
+        from app.agents.conversational_graph.event_bus import EventBus
 
         # Get or create conversation
         conversation = await conversation_service.get_or_create_conversation(
@@ -273,47 +273,28 @@ async def handle_conversational_chat(client_id: str, data: dict) -> None:
             content=message,
         )
 
-        # Stream graph execution
-        final_state = None
-        async for event in stream_conversation(
-            conversation_id=conversation.id,
-            user_id=user_id,
-            thread_id=conversation.thread_id,
-            user_input=message,
-        ):
-            # Extract state updates and send events
-            for node_name, node_output in event.items():
-                if node_name == "__end__":
-                    continue
+        event_bus = EventBus()
 
-                # Send node progress
-                await manager.send_message(client_id, {
-                    "type": EventTypes.NODE_COMPLETED,
-                    "node": node_name,
-                    "timestamp": asyncio.get_event_loop().time(),
-                })
+        # Run graph in background, pushing events to event_bus
+        graph_task = asyncio.create_task(
+            stream_conversation_sse(
+                conversation_id=conversation.id,
+                user_id=user_id,
+                thread_id=conversation.thread_id,
+                user_input=message,
+                event_bus=event_bus,
+            )
+        )
 
-                # Check for stream events in the output
-                if isinstance(node_output, dict):
-                    stream_events = node_output.get("stream_events", [])
-                    for evt in stream_events[-1:]:  # Send latest event
-                        await manager.send_message(client_id, {
-                            "type": evt.get("type", "update"),
-                            "node": evt.get("node"),
-                            "content": evt.get("content"),
-                            "metadata": evt.get("metadata", {}),
-                        })
+        # Forward all events from bus to WebSocket client
+        async for evt in event_bus:
+            await manager.send_message(client_id, {
+                "type": evt.event,
+                **evt.data,
+            })
 
-                    # Check for artifacts
-                    artifacts = node_output.get("artifacts", [])
-                    for artifact in artifacts:
-                        await manager.send_message(client_id, {
-                            "type": EventTypes.ARTIFACT_READY,
-                            "artifact": artifact,
-                        })
-
-                    # Track final state
-                    final_state = node_output
+        # Wait for graph to finish and get final state
+        final_state = await graph_task
 
         # Send final result
         if final_state:
@@ -332,7 +313,7 @@ async def handle_conversational_chat(client_id: str, data: dict) -> None:
         logger.error("Conversational chat error", error=str(e), client_id=client_id)
         await manager.send_message(client_id, {
             "type": EventTypes.ERROR,
-            "message": str(e),
+            "message": str(e) if settings.environment == "development" else "Internal server error",
         })
 
 
@@ -363,6 +344,6 @@ async def handle_hitl_response(client_id: str, data: dict) -> None:
     except Exception as e:
         await manager.send_message(client_id, {
             "type": EventTypes.ERROR,
-            "message": str(e),
+            "message": str(e) if settings.environment == "development" else "Internal server error",
         })
 

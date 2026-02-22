@@ -321,11 +321,12 @@ class MultiPlatformOrchestratorNode:
             generation_time = int((time.time() - start_time) * 1000)
 
             # Build artifact from result
+            content = self._extract_content(result)
             artifact = GeneratedArtifact(
                 id=str(uuid.uuid4()),
                 platform=platform,
-                artifact_type="social_post",
-                content=self._extract_content(result),
+                artifact_type=self._determine_artifact_type(content),
+                content=content,
                 status="completed",
                 generation_time_ms=generation_time,
                 tokens_used=result.get("tokens_used", 0),
@@ -391,6 +392,39 @@ class MultiPlatformOrchestratorNode:
             content["visual"] = result["visual_advice"]
 
         return content
+
+    def _determine_artifact_type(self, content: dict) -> str:
+        """
+        Determine artifact type from content fields.
+
+        Checks for generated image and video content to produce a combined type:
+          text_image_video | text_image | text_video | image | video | text
+        """
+        has_text = bool((content.get("text") or "").strip())
+
+        visual_recs = content.get("visual_recommendations") or []
+        has_image = any(
+            v.get("generation_status") == "image_generated" or v.get("image_url")
+            for v in visual_recs
+        )
+
+        has_video = bool(
+            content.get("script_outline")
+            or content.get("video_url")
+            or content.get("video_content")
+        )
+
+        if has_text and has_image and has_video:
+            return "text_image_video"
+        if has_text and has_image:
+            return "text_image"
+        if has_text and has_video:
+            return "text_video"
+        if has_image:
+            return "image"
+        if has_video:
+            return "video"
+        return "text"
 
     def _extract_topic(self, query: str) -> str:
         """Extract topic from query text."""

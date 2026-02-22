@@ -187,9 +187,12 @@ class Settings(BaseSettings):
     enable_parallel_generation: bool = True
 
     # Elvz Next.js App Integration
-    # Shared API key used for all communication between this engine and the Next.js app.
+    # Key used to verify INCOMING webhook requests from Next.js → Python backend.
     # Must match ELVZ_PYTHON_ENGINE_API_KEY set on the Next.js side.
     elvz_api_key: str = ""
+    # Key used to authenticate OUTGOING requests from Python backend → Next.js internal APIs.
+    # Must match the internal API key configured on the Next.js side.
+    elvz_next_api_key: str = ""
     # Base URL of the Next.js app (used to call internal APIs after receiving a webhook)
     elvz_nextjs_base_url: str = "http://localhost:3000"
 

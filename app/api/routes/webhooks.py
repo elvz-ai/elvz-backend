@@ -109,9 +109,9 @@ def _verify_api_key(x_api_key: Optional[str]) -> None:
     If elvz_api_key is not set (empty), validation is skipped in development
     but enforced in production.
     """
-    if not settings.elvz_api_key:
+    if not settings.elvz_next_api_key:
         if settings.environment == "production":
-            logger.warning("elvz_api_key not configured in production — rejecting request")
+            logger.warning("elvz_next_api_key not configured in production — rejecting request")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Webhook authentication is not configured on this server",
@@ -125,7 +125,7 @@ def _verify_api_key(x_api_key: Optional[str]) -> None:
         )
 
     if not hmac.compare_digest(
-        settings.elvz_api_key.encode(),
+        settings.elvz_next_api_key.encode(),
         x_api_key.encode(),
     ):
         raise HTTPException(
@@ -210,8 +210,14 @@ async def _fetch_posts(extraction_job_id: str) -> list[ExtractedPost]:
     and return the list of extracted posts.
     """
     url = f"{settings.elvz_nextjs_base_url}/api/internal/posts"
-    headers = {"x-api-key": settings.elvz_api_key}
+    headers = {"x-api-key": settings.elvz_next_api_key}
     params = {"extractionJobId": extraction_job_id}
+
+    logger.debug(
+        "Fetching posts from Next.js API",
+        extraction_job_id=extraction_job_id,
+        url=url,
+    )
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -232,6 +238,7 @@ async def _fetch_posts(extraction_job_id: str) -> list[ExtractedPost]:
         logger.error(
             "Failed to connect to Next.js app",
             extraction_job_id=extraction_job_id,
+            url=url,
             error=str(e),
         )
         raise HTTPException(
@@ -242,12 +249,33 @@ async def _fetch_posts(extraction_job_id: str) -> list[ExtractedPost]:
     body = response.json()
     raw_posts = (body.get("data") or [])
 
+    logger.debug(
+        "Raw posts received from Next.js API",
+        extraction_job_id=extraction_job_id,
+        raw_count=len(raw_posts),
+    )
+
     posts = []
+    parse_failures = 0
     for raw in raw_posts:
         try:
             posts.append(ExtractedPost(**raw))
         except Exception as e:
-            logger.warning("Failed to parse post from API response", error=str(e), raw=raw)
+            parse_failures += 1
+            logger.warning(
+                "Failed to parse post from API response",
+                error=str(e),
+                post_id=raw.get("id"),
+                platform_post_id=raw.get("platformPostId"),
+            )
+
+    if parse_failures:
+        logger.warning(
+            "Some posts could not be parsed",
+            extraction_job_id=extraction_job_id,
+            parsed=len(posts),
+            failed=parse_failures,
+        )
 
     logger.info(
         "Fetched posts from Next.js API",
@@ -278,10 +306,24 @@ async def _index_posts(
     documents: list[VectorDocument] = []
     skipped = 0
 
+    logger.info(
+        "Building embedding documents",
+        user_id=user_id,
+        platform=platform,
+        extraction_job_id=extraction_job_id,
+        total_posts=len(posts),
+    )
+
     for post in posts:
         text = (post.caption or "").strip()
         if not text:
             skipped += 1
+            logger.debug(
+                "Skipping post — empty caption",
+                post_id=post.id,
+                platform_post_id=post.platformPostId,
+                post_type=post.type,
+            )
             continue
 
         performance_score = _compute_performance_score(post.engagement)
@@ -295,6 +337,16 @@ async def _index_posts(
                 modality = "video"
             elif "image" in media_types:
                 modality = "image"
+
+        logger.debug(
+            "Building document for post",
+            post_id=post.id,
+            platform_post_id=post.platformPostId,
+            doc_id=doc_id,
+            modality=modality,
+            caption_preview=text[:80],
+            performance_score=performance_score,
+        )
 
         doc = VectorDocument(
             id=doc_id,
@@ -324,10 +376,36 @@ async def _index_posts(
         documents.append(doc)
 
     if not documents:
+        logger.warning(
+            "No embeddable documents after filtering",
+            user_id=user_id,
+            platform=platform,
+            extraction_job_id=extraction_job_id,
+            total_posts=len(posts),
+            skipped=skipped,
+            reason="all posts had empty captions",
+        )
         return 0, skipped
+
+    logger.info(
+        "Sending documents to Qdrant for embedding",
+        user_id=user_id,
+        platform=platform,
+        extraction_job_id=extraction_job_id,
+        document_count=len(documents),
+        skipped=skipped,
+    )
 
     try:
         await vector_store.add_social_content(user_id, documents)
+        logger.info(
+            "Successfully indexed posts into Qdrant",
+            user_id=user_id,
+            platform=platform,
+            extraction_job_id=extraction_job_id,
+            indexed=len(documents),
+            skipped=skipped,
+        )
         return len(documents), skipped
     except Exception as e:
         logger.error(
@@ -335,7 +413,9 @@ async def _index_posts(
             user_id=user_id,
             platform=platform,
             extraction_job_id=extraction_job_id,
+            document_count=len(documents),
             error=str(e),
+            exc_info=True,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
