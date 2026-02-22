@@ -40,7 +40,7 @@ Topic: {topic}
 Message: {message}
 Content Type: {content_type}
 
-## Strategic Analysis Required
+{brand_context_section}{style_reference_section}## Strategic Analysis Required
 Analyze the request and provide:
 1. Content strategy (who to target, what tone, key message)
 2. Hashtag strategy (if needed, what themes/categories)
@@ -121,6 +121,10 @@ class PlannerAgent:
         image_requested = context.get("image", False)
         video_requested = context.get("video", False)
 
+        # Extract brand and style context for informed planning
+        brand_info = context.get("brand_info", {})
+        rag_context = context.get("rag_context", "")
+
         logger.info(
             "Planner agent executing",
             platform=platform,
@@ -135,6 +139,8 @@ class PlannerAgent:
             topic=topic,
             message=message,
             content_type=content_type,
+            brand_info=brand_info,
+            rag_context=rag_context,
         )
 
         # Override visual/video decisions based on user flags
@@ -179,14 +185,38 @@ class PlannerAgent:
         topic: str,
         message: str,
         content_type: str,
+        brand_info: dict = None,
+        rag_context: str = "",
     ) -> dict:
         """Generate planning decisions using LLM."""
-        
+        brand_info = brand_info or {}
+
+        # Build brand context section
+        brand_parts = []
+        if brand_info.get("brand_name"):
+            brand_parts.append(f"Brand: {brand_info['brand_name']}")
+        if brand_info.get("industry"):
+            brand_parts.append(f"Industry: {brand_info['industry']}")
+        if brand_info.get("brand_voice"):
+            brand_parts.append(f"Voice: {brand_info['brand_voice']}")
+        brand_context_section = (
+            "## Brand Context\n" + "\n".join(brand_parts) + "\n\n"
+            if brand_parts else ""
+        )
+
+        # Build style reference section from scraped posts
+        style_reference_section = (
+            f"## User's Past Content (Style Reference)\n{rag_context}\n\n"
+            if rag_context else ""
+        )
+
         user_prompt = PLANNER_USER_PROMPT.format(
             platform=platform,
             topic=topic,
             message=message,
             content_type=content_type,
+            brand_context_section=brand_context_section,
+            style_reference_section=style_reference_section,
         )
         
         messages = [

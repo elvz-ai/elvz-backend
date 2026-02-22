@@ -39,8 +39,10 @@ env/
 # Environment
 .env
 .env.local
+.env.example
 .env.*.local
 *.env
+.env.prod
 
 # Testing
 .tox/
@@ -96,4 +98,8 @@ pip-delete-this-directory.txt
 
 # AI Assistant Rules (local development only)
 rules/
+
+#Docs
+docs/
+
 

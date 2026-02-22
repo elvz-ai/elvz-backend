@@ -5,7 +5,7 @@ FastAPI application main entry point.
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
@@ -15,11 +15,15 @@ from app.api.routes import (
     seo_router,
     social_media_router,
 )
+from app.api.routes.conversations import router as conversations_router
+from app.api.routes.artifacts import router as artifacts_router
+from app.api.routes.chat_v2 import router as chat_v2_router
+from app.api.routes.monitoring import router as monitoring_router
+from app.api.routes.webhooks import router as webhooks_router
 from app.api.websocket import websocket_endpoint
 from app.core.config import settings
 from app.core.cache import cache
 from app.core.database import init_db, close_db
-from app.core.firebase_storage import initialize_firebase
 
 logger = structlog.get_logger(__name__)
 
@@ -47,12 +51,37 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Database initialization failed", error=str(e))
     
-    # Initialize Firebase Storage
+    # Initialize Sentry for error tracking
     try:
-        initialize_firebase()
-        logger.info("Firebase Storage initialized")
+        from app.core.observability import init_sentry
+        init_sentry()
+        logger.info("Sentry initialized")
     except Exception as e:
-        logger.warning("Firebase initialization failed (will retry on first request)", error=str(e))
+        logger.warning("Sentry initialization failed", error=str(e))
+
+    # Initialize LangGraph checkpointer
+    try:
+        from app.core.checkpointer import get_checkpointer
+        await get_checkpointer()
+        logger.info("LangGraph checkpointer initialized")
+    except Exception as e:
+        logger.warning("Checkpointer initialization failed", error=str(e))
+
+    # Connect to Qdrant vector store
+    try:
+        from app.core.vector_store import vector_store
+        await vector_store.connect()
+        logger.info("Qdrant vector store connected")
+    except Exception as e:
+        logger.warning("Qdrant connection failed (RAG will be unavailable)", error=str(e))
+
+    # Start execution logger
+    try:
+        from app.services.execution_monitor import execution_logger
+        await execution_logger.start()
+        logger.info("Execution logger started")
+    except Exception as e:
+        logger.warning("Execution logger startup failed", error=str(e))
 
     # Register Elves with orchestrator
     await register_elves()
@@ -61,7 +90,31 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down Elvz.ai Backend")
-    
+
+    # Stop execution logger
+    try:
+        from app.services.execution_monitor import execution_logger
+        await execution_logger.stop()
+        logger.info("Execution logger stopped")
+    except Exception as e:
+        logger.warning("Execution logger shutdown failed", error=str(e))
+
+    # Disconnect Qdrant vector store
+    try:
+        from app.core.vector_store import vector_store
+        await vector_store.disconnect()
+        logger.info("Qdrant vector store disconnected")
+    except Exception as e:
+        logger.warning("Qdrant disconnect failed", error=str(e))
+
+    # Close LangGraph checkpointer
+    try:
+        from app.core.checkpointer import close_checkpointer
+        await close_checkpointer()
+        logger.info("Checkpointer closed")
+    except Exception as e:
+        logger.warning("Checkpointer close failed", error=str(e))
+
     await cache.disconnect()
     await close_db()
 
@@ -110,22 +163,31 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
 # Include API routes
 app.include_router(chat_router, prefix=settings.api_v1_prefix)
+app.include_router(chat_v2_router, prefix=settings.api_v1_prefix)
+app.include_router(conversations_router, prefix=settings.api_v1_prefix)
+app.include_router(artifacts_router, prefix=settings.api_v1_prefix)
+app.include_router(monitoring_router, prefix=settings.api_v1_prefix)
 app.include_router(social_media_router, prefix=settings.api_v1_prefix)
 app.include_router(seo_router, prefix=settings.api_v1_prefix)
 app.include_router(copywriter_router, prefix=settings.api_v1_prefix)
 app.include_router(assistant_router, prefix=settings.api_v1_prefix)
+app.include_router(webhooks_router, prefix=settings.api_v1_prefix)
 
 
 # WebSocket endpoint
 @app.websocket("/ws/stream/{client_id}")
-async def ws_stream(websocket: WebSocket, client_id: str):
-    """WebSocket endpoint for real-time agent updates."""
+async def ws_stream(websocket: WebSocket, client_id: str, api_key: str = Query(...)):
+    """WebSocket endpoint for real-time agent updates with API key auth."""
+    # Validate API key (skip in dev if not configured)
+    if settings.elvz_api_key and api_key != settings.elvz_api_key:
+        await websocket.close(code=4001, reason="Invalid API key")
+        return
     await websocket_endpoint(websocket, client_id)
 
 

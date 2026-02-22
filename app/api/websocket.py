@@ -1,10 +1,13 @@
 """
 WebSocket endpoints for real-time agent execution updates.
+
+Supports both legacy platform orchestrator and new conversational graph.
 """
 
 import asyncio
 import json
-from typing import Optional
+from datetime import datetime
+from typing import Any, Optional
 
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
@@ -13,6 +16,43 @@ from app.agents.platform_orchestrator import orchestrator
 from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
+
+
+# Event types for the conversational graph
+class EventTypes:
+    """WebSocket event types."""
+    # Connection events
+    PONG = "pong"
+    ERROR = "error"
+
+    # Task lifecycle
+    TASK_STARTED = "task_started"
+    TASK_COMPLETED = "task_completed"
+
+    # Node progress (conversational graph)
+    NODE_STARTED = "node_started"
+    NODE_COMPLETED = "node_completed"
+    NODE_FAILED = "node_failed"
+
+    # Platform generation
+    PLATFORM_STARTED = "platform_started"
+    PLATFORM_PROGRESS = "platform_progress"
+    PLATFORM_COMPLETED = "platform_completed"
+
+    # Content streaming
+    TEXT_CHUNK = "text_chunk"
+    ARTIFACT_READY = "artifact_ready"
+
+    # HITL
+    HITL_REQUEST = "hitl_request"
+    HITL_RESPONSE = "hitl_response"
+
+    # Final result
+    RESULT = "result"
+
+    # Legacy events
+    AGENT_STARTED = "agent_started"
+    AGENT_COMPLETED = "agent_completed"
 
 
 class ConnectionManager:
@@ -82,7 +122,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             elif message_type == "execute":
                 # Handle direct Elf execution
                 await handle_streaming_execute(client_id, data)
-            
+
+            elif message_type == "conversational_chat":
+                # Handle conversational chat with new LangGraph pipeline
+                await handle_conversational_chat(client_id, data)
+
+            elif message_type == "hitl_response":
+                # Handle human-in-the-loop response
+                await handle_hitl_response(client_id, data)
+
             else:
                 await manager.send_message(
                     client_id,
@@ -135,38 +183,38 @@ async def handle_streaming_chat(client_id: str, data: dict) -> None:
     except Exception as e:
         await manager.send_message(client_id, {
             "type": "error",
-            "message": str(e),
+            "message": str(e) if settings.environment == "development" else "Internal server error",
         })
 
 
 async def handle_streaming_execute(client_id: str, data: dict) -> None:
     """Handle direct Elf execution with streaming updates."""
-    
+
     elf_type = data.get("elf_type")
     user_id = data.get("user_id", "anonymous")
     request_data = data.get("request", {})
-    
+
     if not elf_type:
         await manager.send_message(client_id, {
             "type": "error",
             "message": "elf_type is required",
         })
         return
-    
+
     # Send start event
     await manager.send_message(client_id, {
         "type": "task_started",
         "elf_type": elf_type,
         "message": f"Starting {elf_type} execution...",
     })
-    
+
     try:
         result = await orchestrator.execute_elf(
             elf_type=elf_type,
             request_data=request_data,
             user_id=user_id,
         )
-        
+
         # Send progress updates if available
         trace = result.get("result", {}).get("execution_trace", [])
         for step in trace:
@@ -176,16 +224,126 @@ async def handle_streaming_execute(client_id: str, data: dict) -> None:
                 "status": step.get("status"),
             })
             await asyncio.sleep(0.1)  # Small delay for visibility
-        
+
         # Send final result
         await manager.send_message(client_id, {
             "type": "result",
             **result,
         })
-        
+
     except Exception as e:
         await manager.send_message(client_id, {
             "type": "error",
-            "message": str(e),
+            "message": str(e) if settings.environment == "development" else "Internal server error",
+        })
+
+
+async def handle_conversational_chat(client_id: str, data: dict) -> None:
+    """
+    Handle chat request using the conversational graph with full streaming.
+
+    Uses EventBus for real-time step + token streaming via WebSocket.
+    """
+    user_id = data.get("user_id", "anonymous")
+    message = data.get("message", "")
+    conversation_id = data.get("conversation_id")
+
+    # Send start event
+    await manager.send_message(client_id, {
+        "type": EventTypes.TASK_STARTED,
+        "task": "conversational_chat",
+        "message": "Processing your request...",
+    })
+
+    try:
+        from app.services.conversation_service import conversation_service
+        from app.agents.conversational_graph.graph import stream_conversation_sse
+        from app.agents.conversational_graph.event_bus import EventBus
+
+        # Get or create conversation
+        conversation = await conversation_service.get_or_create_conversation(
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+
+        # Save user message
+        await conversation_service.add_message(
+            conversation_id=conversation.id,
+            role="user",
+            content=message,
+        )
+
+        event_bus = EventBus()
+
+        # Run graph in background, pushing events to event_bus
+        graph_task = asyncio.create_task(
+            stream_conversation_sse(
+                conversation_id=conversation.id,
+                user_id=user_id,
+                thread_id=conversation.thread_id,
+                user_input=message,
+                event_bus=event_bus,
+            )
+        )
+
+        # Forward all events from bus to WebSocket client
+        async for evt in event_bus:
+            await manager.send_message(client_id, {
+                "type": evt.event,
+                **evt.data,
+            })
+
+        # Wait for graph to finish and get final state
+        final_state = await graph_task
+
+        # Send final result
+        if final_state:
+            await manager.send_message(client_id, {
+                "type": EventTypes.RESULT,
+                "response": final_state.get("final_response", ""),
+                "conversation_id": conversation.id,
+                "thread_id": conversation.thread_id,
+                "artifacts": final_state.get("artifacts", []),
+                "suggestions": final_state.get("suggestions", []),
+                "requires_approval": final_state.get("requires_approval", False),
+                "execution_trace": final_state.get("execution_trace", []),
+            })
+
+    except Exception as e:
+        logger.error("Conversational chat error", error=str(e), client_id=client_id)
+        await manager.send_message(client_id, {
+            "type": EventTypes.ERROR,
+            "message": str(e) if settings.environment == "development" else "Internal server error",
+        })
+
+
+async def handle_hitl_response(client_id: str, data: dict) -> None:
+    """Handle HITL (human-in-the-loop) response from user."""
+
+    conversation_id = data.get("conversation_id")
+    hitl_request_id = data.get("hitl_request_id")
+    response = data.get("response", "")
+    selected_options = data.get("selected_options", [])
+
+    if not conversation_id or not hitl_request_id:
+        await manager.send_message(client_id, {
+            "type": EventTypes.ERROR,
+            "message": "conversation_id and hitl_request_id are required",
+        })
+        return
+
+    try:
+        # TODO: Implement HITL response handling
+        # This would resume the graph from the checkpoint
+        await manager.send_message(client_id, {
+            "type": EventTypes.HITL_RESPONSE,
+            "status": "received",
+            "message": "Processing your response...",
+        })
+
+    except Exception as e:
+        await manager.send_message(client_id, {
+            "type": EventTypes.ERROR,
+            "message": str(e) if settings.environment == "development" else "Internal server error",
         })
 

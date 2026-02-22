@@ -65,8 +65,8 @@ class EmbeddingService:
         if provider == "gemini":
             import google.generativeai as genai
             genai.configure(api_key=settings.google_api_key)
-            self.model = "models/embedding-001"
-            self.dimension = 768
+            self.model = "models/gemini-embedding-001"
+            self.dimension = 3072
         else:
             self.client = AsyncOpenAI(api_key=settings.openai_api_key)
             self.model = "text-embedding-3-small"
@@ -75,11 +75,13 @@ class EmbeddingService:
     async def embed(self, text: str) -> list[float]:
         """Generate embedding for a single text."""
         if self.provider == "gemini":
+            import asyncio
             import google.generativeai as genai
-            result = genai.embed_content(
+            result = await asyncio.to_thread(
+                genai.embed_content,
                 model=self.model,
                 content=text,
-                task_type="retrieval_query"
+                task_type="retrieval_query",
             )
             return result['embedding']
         else:
@@ -88,20 +90,23 @@ class EmbeddingService:
                 input=text,
             )
             return response.data[0].embedding
-    
+
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts."""
         if self.provider == "gemini":
+            import asyncio
             import google.generativeai as genai
-            embeddings = []
-            for text in texts:
-                result = genai.embed_content(
+            tasks = [
+                asyncio.to_thread(
+                    genai.embed_content,
                     model=self.model,
                     content=text,
-                    task_type="retrieval_document"
+                    task_type="retrieval_document",
                 )
-                embeddings.append(result['embedding'])
-            return embeddings
+                for text in texts
+            ]
+            results = await asyncio.gather(*tasks)
+            return [r['embedding'] for r in results]
         else:
             response = await self.client.embeddings.create(
                 model=self.model,
@@ -238,9 +243,458 @@ class PineconeVectorStore(BaseVectorStore):
         logger.info("Pinecone delete complete", count=len(ids), namespace=namespace)
 
 
+class QdrantVectorStore(BaseVectorStore):
+    """Qdrant vector store implementation."""
+
+    def __init__(self):
+        self._client = None
+        self.embedding_service = EmbeddingService(provider="gemini")
+        self.collection_name = settings.qdrant_collection_name
+
+    async def connect(self) -> None:
+        """Initialize Qdrant connection and ensure collection exists."""
+        try:
+            from qdrant_client import QdrantClient
+            from qdrant_client.models import (
+                Distance,
+                VectorParams,
+                PayloadSchemaType,
+                TextIndexParams,
+                TokenizerType,
+            )
+
+            # Initialize client
+            self._client = QdrantClient(
+                url=settings.qdrant_url,
+                api_key=settings.qdrant_api_key or None,
+                timeout=30,
+            )
+
+            # Check if collection exists
+            collections = self._client.get_collections().collections
+            exists = any(c.name == self.collection_name for c in collections)
+
+            if not exists:
+                # Map distance string to enum
+                distance_map = {
+                    "Cosine": Distance.COSINE,
+                    "Euclid": Distance.EUCLID,
+                    "Dot": Distance.DOT,
+                }
+
+                # Create collection
+                self._client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(
+                        size=settings.qdrant_vector_size,
+                        distance=distance_map.get(
+                            settings.qdrant_distance, Distance.COSINE
+                        ),
+                    ),
+                )
+
+                # Create payload indexes for fast filtering
+                keyword_fields = [
+                    "modality",
+                    "content_type",
+                    "user_id",
+                    "platform",
+                    "category",
+                ]
+                for field in keyword_fields:
+                    self._client.create_payload_index(
+                        collection_name=self.collection_name,
+                        field_name=field,
+                        field_schema=PayloadSchemaType.KEYWORD,
+                    )
+
+                # DateTime index for created_at
+                self._client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="created_at",
+                    field_schema=PayloadSchemaType.DATETIME,
+                )
+
+                # Full-text index on content for hybrid search
+                self._client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="content",
+                    field_schema=TextIndexParams(
+                        type="text",
+                        tokenizer=TokenizerType.WORD,
+                        min_token_len=2,
+                        max_token_len=20,
+                        lowercase=True,
+                    ),
+                )
+
+                logger.info(
+                    "Qdrant collection created",
+                    collection=self.collection_name,
+                    vector_size=settings.qdrant_vector_size,
+                )
+
+            # --- Create social_memory_test collection ---
+            social_collection = settings.qdrant_social_collection
+            social_exists = any(c.name == social_collection for c in collections)
+
+            if not social_exists:
+                distance_map_social = {
+                    "Cosine": Distance.COSINE,
+                    "Euclid": Distance.EUCLID,
+                    "Dot": Distance.DOT,
+                }
+                self._client.create_collection(
+                    collection_name=social_collection,
+                    vectors_config=VectorParams(
+                        size=settings.qdrant_vector_size,
+                        distance=distance_map_social.get(
+                            settings.qdrant_distance, Distance.COSINE
+                        ),
+                    ),
+                )
+
+                # Same payload indexes as elvz_memory
+                for field in keyword_fields:
+                    self._client.create_payload_index(
+                        collection_name=social_collection,
+                        field_name=field,
+                        field_schema=PayloadSchemaType.KEYWORD,
+                    )
+
+                self._client.create_payload_index(
+                    collection_name=social_collection,
+                    field_name="created_at",
+                    field_schema=PayloadSchemaType.DATETIME,
+                )
+
+                self._client.create_payload_index(
+                    collection_name=social_collection,
+                    field_name="content",
+                    field_schema=TextIndexParams(
+                        type="text",
+                        tokenizer=TokenizerType.WORD,
+                        min_token_len=2,
+                        max_token_len=20,
+                        lowercase=True,
+                    ),
+                )
+
+                logger.info(
+                    "Social collection created",
+                    collection=social_collection,
+                    vector_size=settings.qdrant_vector_size,
+                )
+
+            logger.info("Qdrant connected", collection=self.collection_name)
+
+        except Exception as e:
+            logger.error("Qdrant connection failed", error=str(e))
+            raise
+
+    def _ensure_connected(self) -> None:
+        """Lazily initialize Qdrant connection on first use."""
+        if self._client is None:
+            import asyncio
+
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # We're in async context but connect() wasn't called
+                raise RuntimeError(
+                    "Qdrant not connected. Call await connect() first."
+                )
+            else:
+                # Sync context
+                loop.run_until_complete(self.connect())
+
+    @property
+    def client(self):
+        """Get Qdrant client, auto-connecting if needed."""
+        self._ensure_connected()
+        return self._client
+
+    async def upsert(
+        self, documents: list[VectorDocument], namespace: str = ""
+    ) -> None:
+        """Upsert documents. namespace maps to content_type in payload."""
+        from qdrant_client.models import PointStruct
+
+        # Generate embeddings for documents without them
+        texts_to_embed = []
+        indices_to_embed = []
+
+        for i, doc in enumerate(documents):
+            if doc.embedding is None:
+                texts_to_embed.append(doc.content)
+                indices_to_embed.append(i)
+
+        if texts_to_embed:
+            embeddings = await self.embedding_service.embed_batch(texts_to_embed)
+            for idx, embedding in zip(indices_to_embed, embeddings):
+                documents[idx].embedding = embedding
+
+        # Build points
+        points = []
+        for doc in documents:
+            payload = {
+                **doc.metadata,
+                "content": doc.content,
+            }
+            # Map legacy namespace to content_type if not set
+            if "content_type" not in payload and namespace:
+                payload["content_type"] = namespace
+            # Default modality to text
+            if "modality" not in payload:
+                payload["modality"] = "text"
+
+            points.append(
+                PointStruct(
+                    id=doc.id,  # String UUID
+                    vector=doc.embedding,
+                    payload=payload,
+                )
+            )
+
+        # Batch upsert (Qdrant handles large batches internally)
+        batch_size = 100
+        for i in range(0, len(points), batch_size):
+            batch = points[i : i + batch_size]
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=batch,
+            )
+
+        logger.info(
+            "Qdrant upsert complete",
+            count=len(documents),
+            collection=self.collection_name,
+        )
+
+    async def search(
+        self,
+        query: str,
+        namespace: str = "",
+        top_k: int = 5,
+        filter_metadata: Optional[dict[str, Any]] = None,
+    ) -> list[VectorSearchResult]:
+        """Search with payload filtering."""
+        from qdrant_client.models import (
+            Filter,
+            FieldCondition,
+            MatchValue,
+            MatchAny,
+        )
+
+        # Debug: Print search parameters
+        logger.debug(
+            "Qdrant search",
+            query_preview=query[:80],
+            collection=self.collection_name,
+            top_k=top_k,
+            filters=filter_metadata,
+        )
+
+        # Generate query embedding
+        query_embedding = await self.embedding_service.embed(query)
+
+        # Build Qdrant filter from metadata
+        qdrant_filter = None
+        if filter_metadata:
+            conditions = []
+            for key, value in filter_metadata.items():
+                if isinstance(value, dict) and "$in" in value:
+                    # Handle $in operator (e.g., {"user_id": {"$in": ["user1", "system"]}})
+                    conditions.append(
+                        FieldCondition(key=key, match=MatchAny(any=value["$in"]))
+                    )
+                elif isinstance(value, list):
+                    # Handle direct list (e.g., {"modality": ["text", "image"]})
+                    conditions.append(
+                        FieldCondition(key=key, match=MatchAny(any=value))
+                    )
+                else:
+                    # Handle single value (e.g., {"platform": "linkedin"})
+                    conditions.append(
+                        FieldCondition(key=key, match=MatchValue(value=value))
+                    )
+            qdrant_filter = Filter(must=conditions)
+
+        # Execute search
+        results = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_embedding,
+            query_filter=qdrant_filter,
+            limit=top_k,
+            with_payload=True,
+        )
+
+        # Convert to VectorSearchResult
+        search_results = []
+        for point in results.points:
+            payload = point.payload or {}
+            content = payload.pop("content", "")
+            search_results.append(
+                VectorSearchResult(
+                    id=str(point.id),
+                    content=content,
+                    metadata=payload,
+                    score=point.score,
+                )
+            )
+
+        logger.debug(
+            "Qdrant search complete",
+            query_preview=query[:50],
+            results_count=len(search_results),
+        )
+        return search_results
+
+    async def delete(self, ids: list[str], namespace: str = "") -> None:
+        """Delete points by ID."""
+        from qdrant_client.models import PointIdsList
+
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=PointIdsList(points=ids),
+        )
+        logger.info(
+            "Qdrant delete complete",
+            count=len(ids),
+            collection=self.collection_name,
+        )
+
+    # --- Multi-collection helpers (for social_memory_test) ---
+
+    async def _upsert_to_collection(
+        self, collection_name: str, documents: list[VectorDocument]
+    ) -> None:
+        """Upsert documents to a specific collection."""
+        from qdrant_client.models import PointStruct
+
+        texts_to_embed = []
+        indices_to_embed = []
+
+        for i, doc in enumerate(documents):
+            if doc.embedding is None:
+                texts_to_embed.append(doc.content)
+                indices_to_embed.append(i)
+
+        if texts_to_embed:
+            embeddings = await self.embedding_service.embed_batch(texts_to_embed)
+            for idx, embedding in zip(indices_to_embed, embeddings):
+                documents[idx].embedding = embedding
+
+        points = []
+        for doc in documents:
+            payload = {**doc.metadata, "content": doc.content}
+            if "modality" not in payload:
+                payload["modality"] = "text"
+            points.append(
+                PointStruct(id=doc.id, vector=doc.embedding, payload=payload)
+            )
+
+        batch_size = 100
+        for i in range(0, len(points), batch_size):
+            batch = points[i : i + batch_size]
+            self.client.upsert(collection_name=collection_name, points=batch)
+
+        logger.info(
+            "Qdrant upsert complete",
+            count=len(documents),
+            collection=collection_name,
+        )
+
+    async def _search_collection(
+        self,
+        collection_name: str,
+        query: str,
+        top_k: int,
+        filter_metadata: dict,
+    ) -> list[VectorSearchResult]:
+        """Search a specific collection with filters."""
+        from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
+
+        logger.debug(
+            "Qdrant search",
+            query_preview=query[:80],
+            collection=collection_name,
+            top_k=top_k,
+            filters=filter_metadata,
+        )
+
+        query_embedding = await self.embedding_service.embed(query)
+
+        conditions = []
+        for key, value in filter_metadata.items():
+            if isinstance(value, dict) and "$in" in value:
+                conditions.append(
+                    FieldCondition(key=key, match=MatchAny(any=value["$in"]))
+                )
+            elif isinstance(value, list):
+                conditions.append(
+                    FieldCondition(key=key, match=MatchAny(any=value))
+                )
+            else:
+                conditions.append(
+                    FieldCondition(key=key, match=MatchValue(value=value))
+                )
+
+        qdrant_filter = Filter(must=conditions) if conditions else None
+
+        results = self.client.query_points(
+            collection_name=collection_name,
+            query=query_embedding,
+            query_filter=qdrant_filter,
+            limit=top_k,
+            with_payload=True,
+        )
+
+        search_results = []
+        for point in results.points:
+            payload = point.payload or {}
+            content = payload.pop("content", "")
+            search_results.append(
+                VectorSearchResult(
+                    id=str(point.id),
+                    content=content,
+                    metadata=payload,
+                    score=point.score,
+                )
+            )
+
+        logger.debug(
+            "Qdrant search complete",
+            collection=collection_name,
+            query_preview=query[:50],
+            results_count=len(search_results),
+        )
+        return search_results
+
+    def _has_points(self, collection_name: str, filter_metadata: dict) -> bool:
+        """Check if any points exist matching the filter (fast scroll limit=1)."""
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        conditions = []
+        for key, value in filter_metadata.items():
+            conditions.append(
+                FieldCondition(key=key, match=MatchValue(value=value))
+            )
+
+        scroll_filter = Filter(must=conditions) if conditions else None
+
+        points, _ = self.client.scroll(
+            collection_name=collection_name,
+            scroll_filter=scroll_filter,
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        )
+        return len(points) > 0
+
+
 class WeaviateVectorStore(BaseVectorStore):
     """Weaviate vector store implementation."""
-    
+
     def __init__(self):
         self._client = None
         self.embedding_service = EmbeddingService()
@@ -378,15 +832,17 @@ class WeaviateVectorStore(BaseVectorStore):
 class VectorStore:
     """
     Unified vector store interface.
-    
+
     Indexes:
     - knowledge_base: Best practices, case studies, frameworks
     - content_examples: High-performing social posts, blogs, ads
     - user_content: Per-user content history
     """
-    
-    def __init__(self, backend: str = "pinecone"):
-        if backend == "pinecone":
+
+    def __init__(self, backend: str = "qdrant"):
+        if backend == "qdrant":
+            self._store: BaseVectorStore = QdrantVectorStore()
+        elif backend == "pinecone":
             self._store: BaseVectorStore = PineconeVectorStore()
         else:
             self._store: BaseVectorStore = WeaviateVectorStore()
@@ -414,6 +870,7 @@ class VectorStore:
         category: Optional[str] = None,
         platform: Optional[str] = None,
         industry: Optional[str] = None,
+        modalities: Optional[list[str]] = None,
         top_k: int = 5,
     ) -> list[VectorSearchResult]:
         """Search knowledge base with optional user_id filtering."""
@@ -427,7 +884,9 @@ class VectorStore:
             filters["platform"] = platform
         if industry:
             filters["industry"] = industry
-        
+        if modalities:
+            filters["modality"] = {"$in": modalities}
+
         return await self._store.search(
             query=query,
             namespace="knowledge_base",
@@ -453,6 +912,7 @@ class VectorStore:
         content_type: Optional[str] = None,
         platform: Optional[str] = None,
         min_performance: Optional[float] = None,
+        modalities: Optional[list[str]] = None,
         top_k: int = 5,
     ) -> list[VectorSearchResult]:
         """Search content examples with optional user_id filtering."""
@@ -464,6 +924,8 @@ class VectorStore:
             filters["content_type"] = content_type
         if platform:
             filters["platform"] = platform
+        if modalities:
+            filters["modality"] = {"$in": modalities}
         
         results = await self._store.search(
             query=query,
@@ -496,23 +958,87 @@ class VectorStore:
         user_id: str,
         query: str,
         content_type: Optional[str] = None,
+        modalities: Optional[list[str]] = None,
         top_k: int = 10,
     ) -> list[VectorSearchResult]:
         """Search user's content history."""
         namespace = f"user_{user_id}"
-        filters = {"content_type": content_type} if content_type else None
-        
+        filters = {}
+        if content_type:
+            filters["content_type"] = content_type
+        if modalities:
+            filters["modality"] = {"$in": modalities}
+
         return await self._store.search(
             query=query,
             namespace=namespace,
             top_k=top_k,
-            filter_metadata=filters,
+            filter_metadata=filters if filters else None,
         )
     
     async def delete_user_content(self, user_id: str, doc_ids: list[str]) -> None:
         """Delete user's content."""
         namespace = f"user_{user_id}"
         await self._store.delete(doc_ids, namespace=namespace)
+
+    # --- Social Content Operations (social_memory_test collection) ---
+
+    async def add_social_content(
+        self, user_id: str, documents: list[VectorDocument]
+    ) -> None:
+        """Add scraped social posts to the social_memory_test collection."""
+        for doc in documents:
+            doc.metadata["user_id"] = user_id
+        social_collection = settings.qdrant_social_collection
+        if isinstance(self._store, QdrantVectorStore):
+            await self._store._upsert_to_collection(social_collection, documents)
+        else:
+            # Fallback for non-Qdrant backends
+            await self._store.upsert(documents, namespace=f"social_{user_id}")
+
+    async def search_social_content(
+        self,
+        user_id: str,
+        query: str,
+        platform: Optional[str] = None,
+        top_k: int = 10,
+    ) -> list[VectorSearchResult]:
+        """Semantic search over user's scraped social posts."""
+        filters: dict[str, Any] = {"user_id": user_id}
+        if platform:
+            filters["platform"] = platform
+        social_collection = settings.qdrant_social_collection
+        if isinstance(self._store, QdrantVectorStore):
+            return await self._store._search_collection(
+                social_collection, query, top_k, filters
+            )
+        else:
+            return await self._store.search(
+                query=query,
+                namespace=f"social_{user_id}",
+                top_k=top_k,
+                filter_metadata=filters,
+            )
+
+    async def has_social_content(
+        self, user_id: str, platform: Optional[str] = None
+    ) -> bool:
+        """Check if ANY social content exists for this user (fast scroll limit=1)."""
+        filters: dict[str, str] = {"user_id": user_id}
+        if platform:
+            filters["platform"] = platform
+        social_collection = settings.qdrant_social_collection
+        if isinstance(self._store, QdrantVectorStore):
+            return self._store._has_points(social_collection, filters)
+        else:
+            # Fallback: do a search with limit=1
+            results = await self._store.search(
+                query="social media",
+                namespace=f"social_{user_id}",
+                top_k=1,
+                filter_metadata=filters,
+            )
+            return len(results) > 0
 
 
 # Global vector store instance
