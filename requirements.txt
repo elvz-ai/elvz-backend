@@ -43,7 +43,7 @@ boto3==1.35.0
 botocore==1.35.0
 
 # Observability & Monitoring
-langfuse==2.0.1
+langfuse>=2.7.0,<3.0.0
 sentry-sdk[fastapi]==2.19.2
 
 # Vertex AI (Google Cloud)
