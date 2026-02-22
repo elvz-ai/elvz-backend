@@ -36,7 +36,7 @@ langgraph-checkpoint-postgres~=2.0.10
 openai~=1.10
 anthropic~=0.18
 google-generativeai~=0.4.0
-tiktoken~=0.5.2
+tiktoken>=0.7,<1
 
 # AWS Services
 boto3==1.35.0
