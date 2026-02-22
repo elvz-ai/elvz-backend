@@ -344,39 +344,52 @@ Create a visually appealing, professional image that matches this description.""
                     logger.error("Error extracting image from images field", error=str(e))
 
             # Fallback: check message content for URL or base64
+            external_url = None
             if not base64_image and message.content:
                 content = message.content.strip()
 
                 # Check if response is a direct URL
                 if content.startswith("http://") or content.startswith("https://"):
-                    return {"url": content}
+                    external_url = content
 
                 # Check if response is JSON with URL
-                try:
-                    parsed = json.loads(content)
-                    if isinstance(parsed, dict):
-                        url = parsed.get("url") or parsed.get("image_url") or parsed.get("data", {}).get("url")
-                        if url:
-                            if url.startswith("http"):
-                                return {"url": url}
-                            elif url.startswith("data:image"):
-                                base64_image = url
-                except json.JSONDecodeError:
-                    pass
+                if not external_url:
+                    try:
+                        parsed = json.loads(content)
+                        if isinstance(parsed, dict):
+                            url = parsed.get("url") or parsed.get("image_url") or parsed.get("data", {}).get("url")
+                            if url:
+                                if url.startswith("http"):
+                                    external_url = url
+                                elif url.startswith("data:image"):
+                                    base64_image = url
+                    except json.JSONDecodeError:
+                        pass
 
                 # If response is base64 without prefix
-                if not base64_image and len(content) > 100 and not content.startswith("http"):
+                if not base64_image and not external_url and len(content) > 100 and not content.startswith("http"):
                     base64_image = f"data:image/png;base64,{content}"
 
-            # Upload to Firebase Storage if we have base64 data
-            if base64_image:
-                from app.core.firebase_storage import upload_base64_image
-                firebase_url = upload_base64_image(base64_image)
-                if firebase_url:
-                    logger.info("Image uploaded to Firebase Storage")
-                    return {"url": firebase_url}
+            from app.core.s3_storage import upload_base64_image, upload_image_from_url
+
+            # Route external URLs through S3
+            if external_url:
+                s3_url = await upload_image_from_url(external_url)
+                if s3_url:
+                    logger.info("Image re-uploaded to S3 from external URL")
+                    return {"url": s3_url}
                 else:
-                    logger.warning("Failed to upload to Firebase, returning base64")
+                    logger.warning("Failed to re-upload external URL to S3, using original")
+                    return {"url": external_url}
+
+            # Upload base64 to S3
+            if base64_image:
+                s3_url = await upload_base64_image(base64_image)
+                if s3_url:
+                    logger.info("Image uploaded to S3")
+                    return {"url": s3_url}
+                else:
+                    logger.warning("Failed to upload to S3, returning base64")
                     return {"url": base64_image}
 
             logger.warning("Image generation returned unexpected format")
