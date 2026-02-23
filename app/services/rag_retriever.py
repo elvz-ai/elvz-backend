@@ -6,6 +6,8 @@ and result ranking for the conversational AI.
 """
 
 import asyncio
+import re
+from collections import Counter
 from typing import Optional
 
 import structlog
@@ -36,6 +38,254 @@ class RAGRetriever:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except Exception:
             logger.warning("Tiktoken not available, using character-based estimation")
+
+    # ------------------------------------------------------------------
+    # Style feature extraction helpers
+    # ------------------------------------------------------------------
+
+    def _extract_style_features(self, posts: list[dict]) -> dict:
+        """
+        Extract Level-3 writing style patterns from a list of posts.
+
+        Analyzes structure, voice, hooks, engagement patterns, and hashtags
+        to produce a structured style profile for the LLM.
+        """
+        captions = [p["content"] for p in posts if p.get("content")]
+        if not captions:
+            return {}
+
+        # 1. Avg word count
+        avg_words = round(sum(len(c.split()) for c in captions) / len(captions))
+
+        # 2. Emoji usage
+        emoji_re = re.compile(
+            "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
+            "\U0001F680-\U0001F9FF\U00002702-\U000027B0]+",
+            flags=re.UNICODE,
+        )
+        avg_emojis = round(
+            sum(len(emoji_re.findall(c)) for c in captions) / len(captions), 1
+        )
+
+        # 3. Line breaks (paragraph rhythm)
+        avg_breaks = round(
+            sum(c.count("\n") for c in captions) / len(captions), 1
+        )
+
+        # 4. Question mark usage
+        question_pct = round(
+            sum(1 for c in captions if "?" in c) / len(captions) * 100
+        )
+
+        # 5. Avg hashtag count
+        avg_tags = round(
+            sum(len(p.get("hashtags") or []) for p in posts) / len(posts), 1
+        )
+
+        # 6. Dominant hook style (first line pattern)
+        hooks = []
+        for c in captions:
+            first = c.split("\n")[0][:120]
+            if "?" in first:
+                hooks.append("question")
+            elif re.match(r"^\d", first):
+                hooks.append("number/statistic")
+            elif re.match(r"^(I |We |My )", first):
+                hooks.append("personal story")
+            else:
+                hooks.append("bold statement")
+        hook_style = Counter(hooks).most_common(1)[0][0]
+
+        # 7. CTA style — ends with question?
+        cta_question_pct = round(
+            sum(1 for c in captions if c.strip().endswith("?")) / len(captions) * 100
+        )
+
+        # 8. Confidence level based on post count
+        n = len(posts)
+        if n >= 15:
+            confidence = "HIGH"
+        elif n >= 5:
+            confidence = "MEDIUM"
+        elif n >= 2:
+            confidence = "LOW"
+        else:
+            confidence = "VERY LOW"
+
+        return {
+            "avg_word_count": avg_words,
+            "avg_emojis": avg_emojis,
+            "avg_line_breaks": avg_breaks,
+            "question_frequency_pct": question_pct,
+            "avg_hashtags": avg_tags,
+            "dominant_hook_style": hook_style,
+            "cta_question_pct": cta_question_pct,
+            "posts_analyzed": n,
+            "confidence": confidence,
+        }
+
+    def _format_style_features(self, features: dict) -> str:
+        """Format extracted style features as a structured LLM prompt section."""
+        if not features:
+            return ""
+        return (
+            f"== Writing Style Profile"
+            f" (Confidence: {features['confidence']},"
+            f" from {features['posts_analyzed']} posts) ==\n"
+            f"- Post length: ~{features['avg_word_count']} words\n"
+            f"- Emoji usage: {features['avg_emojis']} per post\n"
+            f"- Paragraph breaks: {features['avg_line_breaks']} per post\n"
+            f"- Uses questions in body: {features['question_frequency_pct']}% of posts\n"
+            f"- Hashtag count: ~{features['avg_hashtags']} per post\n"
+            f"- Dominant hook style: {features['dominant_hook_style']}\n"
+            f"- Ends with a question (CTA): {features['cta_question_pct']}% of posts"
+        )
+
+    # ------------------------------------------------------------------
+    # Two-step social history retrieval
+    # ------------------------------------------------------------------
+
+    async def _search_social_history_two_step(
+        self,
+        query: str,
+        user_id: str,
+        platform: Optional[str] = None,
+        top_k: int = 10,
+    ) -> tuple[list[dict], dict]:
+        """
+        Three-tier social history retrieval.
+
+        Tier 1 — Redis cache (~0.1ms): style pre-computed at webhook time.
+        Tier 2 — PostgreSQL (~5-20ms): durable fallback if Redis was flushed.
+        Tier 3 — Qdrant scroll (~100-300ms): first-time user with no cached data yet.
+
+        Semantic search always runs in real time (topic changes per query).
+        Style features are stable between messages so they are cached.
+        """
+        # Avoid circular import: webhooks.py imports rag_retriever at module level
+        from app.core.cache import cache
+        from app.core.database import get_db_context
+        from app.models.user_style_profile import UserStyleProfile
+
+        # --- Tier 1: Redis (~0.1ms) ---
+        cached_style = await cache.get_style_profile(user_id)
+
+        # --- Tier 2: PostgreSQL (~5-20ms) ---
+        if not cached_style:
+            try:
+                async with get_db_context() as db:
+                    row = await db.get(UserStyleProfile, user_id)
+                    if row:
+                        cached_style = row.features
+                        # Re-warm Redis so next request is instant
+                        await cache.set_style_profile(user_id, cached_style)
+                        logger.info(
+                            "Style profile loaded from PostgreSQL",
+                            user_id=user_id,
+                            confidence=cached_style.get("confidence"),
+                        )
+            except Exception as e:
+                logger.warning("PostgreSQL style profile lookup failed", error=str(e))
+
+        # --- Fast path: style is known, only run semantic search ---
+        if cached_style:
+            semantic_results = await vector_store.search_social_content(
+                user_id=user_id, query=query, platform=platform, top_k=top_k
+            )
+            min_score = self._get_min_score("social_history")
+            semantic_items = [
+                {
+                    "type": "social_history",
+                    "content": r.content,
+                    "score": r.score,
+                    "platform": r.metadata.get("platform"),
+                    "posted_at": r.metadata.get("posted_at", ""),
+                    "hashtags": r.metadata.get("hashtags", []),
+                    "engagement": r.metadata.get("engagement"),
+                    "performance_score": r.metadata.get("performance_score", 0),
+                    "source": "semantic",
+                }
+                for r in semantic_results
+                if r.score >= min_score
+            ]
+            logger.info(
+                "Social history retrieved (style from cache)",
+                user_id=user_id,
+                platform=platform,
+                semantic_count=len(semantic_items),
+                style_confidence=cached_style.get("confidence", "unknown"),
+            )
+            return semantic_items[:top_k], cached_style
+
+        # --- Tier 3: Qdrant scroll (first-time user, no cached data yet) ---
+        baseline_task = vector_store.fetch_top_social_by_score(
+            user_id=user_id, top_n=10
+        )
+        semantic_task = vector_store.search_social_content(
+            user_id=user_id, query=query, platform=platform, top_k=top_k
+        )
+        top_posts, semantic_results = await asyncio.gather(baseline_task, semantic_task)
+
+        min_score = self._get_min_score("social_history")
+        semantic_items = [
+            {
+                "type": "social_history",
+                "content": r.content,
+                "score": r.score,
+                "platform": r.metadata.get("platform"),
+                "posted_at": r.metadata.get("posted_at", ""),
+                "hashtags": r.metadata.get("hashtags", []),
+                "engagement": r.metadata.get("engagement"),
+                "performance_score": r.metadata.get("performance_score", 0),
+                "source": "semantic",
+            }
+            for r in semantic_results
+            if r.score >= min_score
+        ]
+
+        for p in top_posts:
+            p["source"] = "style_baseline"
+
+        seen: set[str] = set()
+        merged: list[dict] = []
+        for item in semantic_items + top_posts:
+            key = (item.get("content") or "")[:80]
+            if key and key not in seen:
+                merged.append(item)
+                seen.add(key)
+
+        style_features = self._extract_style_features(top_posts[:10])
+
+        # Lazily populate cache so subsequent requests skip the Qdrant scroll
+        if style_features:
+            try:
+                await cache.set_style_profile(user_id, style_features)
+                async with get_db_context() as db:
+                    existing = await db.get(UserStyleProfile, user_id)
+                    if existing:
+                        existing.features = style_features
+                        existing.posts_analyzed = style_features["posts_analyzed"]
+                        existing.confidence = style_features["confidence"]
+                    else:
+                        db.add(UserStyleProfile(
+                            user_id=user_id,
+                            features=style_features,
+                            posts_analyzed=style_features["posts_analyzed"],
+                            confidence=style_features["confidence"],
+                        ))
+            except Exception as e:
+                logger.warning("Failed to lazily cache style profile", error=str(e))
+
+        logger.info(
+            "Social history retrieved (Qdrant scroll — cold start)",
+            user_id=user_id,
+            platform=platform,
+            baseline_count=len(top_posts),
+            semantic_count=len(semantic_items),
+            style_confidence=style_features.get("confidence", "none"),
+        )
+
+        return merged[:top_k], style_features
 
     def count_tokens(self, text: str) -> int:
         """Count tokens in text."""
@@ -87,6 +337,7 @@ class RAGRetriever:
             "examples": [],
             "user_history": [],
             "social_history": [],
+            "style_features": {},
             "total_tokens": 0,
             "sources_used": [],
         }
@@ -117,6 +368,15 @@ class RAGRetriever:
                 continue
 
             items = output
+
+            # Extract style_features sentinel before token budget
+            if ctx_type == "social_history":
+                sentinel = next(
+                    (i for i in items if i.get("type") == "_style_features"), None
+                )
+                if sentinel:
+                    items = [i for i in items if i.get("type") != "_style_features"]
+                    results["style_features"] = sentinel["features"]
 
             # Apply token budget
             filtered_items, tokens_used = self._apply_token_budget(
@@ -311,27 +571,17 @@ class RAGRetriever:
                 return self._filter_by_score(items, min_score, ctx_type)
 
             elif ctx_type == "social_history":
-                # Search scraped social posts from social_memory_test collection
-                results = await vector_store.search_social_content(
-                    user_id=user_id,
+                # Two-step retrieval: style baseline (always) + semantic (optional)
+                items, style_features = await self._search_social_history_two_step(
                     query=query,
+                    user_id=user_id,
                     platform=platforms[0] if platforms else None,
                     top_k=top_k,
                 )
-                items = [
-                    {
-                        "type": "social_history",
-                        "content": r.content,
-                        "score": r.score,
-                        "platform": r.metadata.get("platform"),
-                        "posted_at": r.metadata.get("posted_at"),
-                        "hashtags": r.metadata.get("hashtags", []),
-                        "engagement": r.metadata.get("engagement"),
-                        "performance_score": r.metadata.get("performance_score"),
-                    }
-                    for r in results
-                ]
-                return self._filter_by_score(items, min_score, ctx_type)
+                # Attach style_features as a sentinel so retrieve() can surface it
+                if style_features:
+                    items.append({"type": "_style_features", "features": style_features})
+                return items  # score filtering already applied inside two_step
 
             elif ctx_type == "conversation":
                 # Search past conversation turns (user queries + QA responses)
@@ -534,17 +784,56 @@ class RAGRetriever:
                 parts.append(f"[{label}] {content}")
             parts.append("")
 
-        # User's scraped social posts (from social_memory_test)
+        # User's scraped social posts — style profile + examples
         if context.get("social_history"):
-            parts.append("=== Your Past Social Media Posts (Style Reference) ===")
-            for item in context["social_history"][:5]:
-                platform = item.get("platform", "unknown")
-                content = item.get("content", "")[:500]
-                hashtags = " ".join(item.get("hashtags", [])[:5])
-                parts.append(f"[{platform}] {content}")
-                if hashtags:
-                    parts.append(f"  Tags: {hashtags}")
-            parts.append("")
+            # 1. Style profile summary (Level-3 structured features)
+            style_features = context.get("style_features", {})
+            if style_features:
+                parts.append(self._format_style_features(style_features))
+                parts.append("")
+
+            # 2. Topic-relevant posts (semantic matches — optional)
+            semantic = [
+                p for p in context["social_history"]
+                if p.get("source") == "semantic"
+            ]
+            if semantic:
+                parts.append("=== Topic-Relevant Posts (Style + Topic Context) ===")
+                for item in semantic[:3]:
+                    pf = item.get("platform", "unknown")
+                    content = (item.get("content") or "")[:500]
+                    tags = " ".join((item.get("hashtags") or [])[:5])
+                    eng = item.get("engagement") or {}
+                    perf = item.get("performance_score", 0)
+                    parts.append(f"[{pf}] {content}")
+                    if tags:
+                        parts.append(f"  Tags: {tags}")
+                    if eng:
+                        parts.append(
+                            f"  Engagement: {eng.get('likes', 0)} likes,"
+                            f" {eng.get('comments', 0)} comments,"
+                            f" {eng.get('shares', 0)} shares"
+                            f" (performance score: {perf})"
+                        )
+                parts.append("")
+
+            # 3. Style baseline posts (top by performance × recency — always present)
+            baseline = [
+                p for p in context["social_history"]
+                if p.get("source") == "style_baseline"
+            ]
+            if baseline:
+                parts.append("=== Your Best Posts (Style Baseline) ===")
+                for item in baseline[:3]:
+                    pf = item.get("platform", "unknown")
+                    content = (item.get("content") or "")[:500]
+                    tags = " ".join((item.get("hashtags") or [])[:5])
+                    perf = item.get("performance_score", 0)
+                    parts.append(f"[{pf}] {content}")
+                    if tags:
+                        parts.append(f"  Tags: {tags}")
+                    parts.append(f"  Performance score: {perf}")
+                parts.append("")
 
         # User's past content (from elvz_memory)
         if context.get("user_content"):

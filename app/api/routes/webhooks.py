@@ -18,11 +18,16 @@ from typing import Optional
 
 import httpx
 import structlog
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import cache
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.vector_store import VectorDocument, vector_store
+from app.models.user_style_profile import UserStyleProfile
+from app.services.rag_retriever import rag_retriever
 
 logger = structlog.get_logger(__name__)
 
@@ -142,6 +147,7 @@ def _verify_api_key(x_api_key: Optional[str]) -> None:
 async def extraction_complete(
     payload: ExtractionCompletePayload,
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    db: AsyncSession = Depends(get_db),
 ) -> WebhookResponse:
     """
     Called by the Next.js app when a social media extraction job finishes.
@@ -183,6 +189,40 @@ async def extraction_complete(
         extraction_job_id=payload.extractionJobId,
         posts=posts,
     )
+
+    # Compute and persist style profile from the freshly indexed posts
+    if indexed > 0:
+        post_dicts = [
+            {"content": p.caption, "hashtags": p.hashtags}
+            for p in posts
+            if p.caption and p.caption.strip()
+        ]
+        style_features = rag_retriever._extract_style_features(post_dicts)
+        if style_features:
+            # Upsert into PostgreSQL (durable source of truth)
+            existing = await db.get(UserStyleProfile, payload.userId)
+            if existing:
+                existing.features = style_features
+                existing.posts_analyzed = style_features["posts_analyzed"]
+                existing.confidence = style_features["confidence"]
+            else:
+                db.add(UserStyleProfile(
+                    user_id=payload.userId,
+                    features=style_features,
+                    posts_analyzed=style_features["posts_analyzed"],
+                    confidence=style_features["confidence"],
+                ))
+            # session auto-commits via get_db dependency
+
+            # Also write to Redis (fast reads at chat time)
+            await cache.set_style_profile(payload.userId, style_features)
+
+            logger.info(
+                "Style profile saved",
+                user_id=payload.userId,
+                confidence=style_features.get("confidence"),
+                posts_analyzed=style_features.get("posts_analyzed"),
+            )
 
     logger.info(
         "Extraction webhook processed",
