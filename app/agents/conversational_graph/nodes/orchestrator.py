@@ -281,6 +281,8 @@ class MultiPlatformOrchestratorNode:
                 "message": query.get("query", state["current_input"]),
                 "shared_topic": working_memory.get("shared_topic", ""),
                 "shared_tone": working_memory.get("shared_tone", ""),
+                "variation_index": query.get("variation_index", 1),
+                "variation_total": query.get("variation_total", 1),
             }
 
             # For modifications, attach the original post and user's feedback
@@ -456,7 +458,7 @@ class MultiPlatformOrchestratorNode:
 
         if len(artifacts) == 1:
             artifact = artifacts[0]
-            content = artifact.get("content", {})
+            content = artifact.get("content") or {}
             text = content.get("text", "")
 
             response = f"Here's your {artifact['platform'].title()} post:\n\n"
@@ -468,8 +470,26 @@ class MultiPlatformOrchestratorNode:
 
             return response
 
+        # Multiple artifacts — same platform (batch variations) or multi-platform
+        unique_platforms = {a.get("platform") for a in artifacts}
+
+        if len(unique_platforms) == 1:
+            # Same platform, multiple variations
+            platform_label = artifacts[0].get("platform", "").title()
+            response = f"Here are {len(artifacts)} {platform_label} post variations:\n\n"
+
+            for i, artifact in enumerate(artifacts, 1):
+                content = artifact.get("content") or {}
+                text = content.get("text", "")
+                response += f"**Variation {i}:**\n{text}\n\n"
+                if content.get("hashtags"):
+                    hashtags = " ".join(content["hashtags"][:5])
+                    response += f"*Hashtags: {hashtags}*\n\n"
+
+            return response
+
         else:
-            # Multiple platforms
+            # Multi-platform
             response = f"Here's your content for {len(artifacts)} platforms:\n\n"
 
             for artifact in artifacts:

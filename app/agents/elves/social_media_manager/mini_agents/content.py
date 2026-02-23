@@ -151,7 +151,11 @@ class ContentAgent:
         content_strategy = plan.get("content_strategy") or {}
         expert_persona = plan.get("expert_persona") or ""
         # logger.info("expert_persona", expert_persona=expert_persona)
-        
+
+        # Variation fields for batch generation ("Create 2 LinkedIn posts")
+        variation_index = request.get("variation_index", 1)
+        variation_total = request.get("variation_total", 1)
+
         # Generate content using Grok
         content = await self._generate_content(
             platform=platform,
@@ -166,6 +170,8 @@ class ContentAgent:
             conversation_history=conversation_history,
             previous_content=previous_content,
             modification_feedback=modification_feedback,
+            variation_index=variation_index,
+            variation_total=variation_total,
         )
         
         return {"content": content}
@@ -203,6 +209,8 @@ class ContentAgent:
         conversation_history: str = "",
         previous_content: str = "",
         modification_feedback: str = "",
+        variation_index: int = 1,
+        variation_total: int = 1,
     ) -> dict:
         """Generate content using Grok."""
 
@@ -214,6 +222,24 @@ class ContentAgent:
         style_reference = ""
         if rag_context:
             style_reference = f"## Style Reference (User's Past Content)\n{rag_context}\n\n"
+
+        # Prepend variation directive for same-platform batch generation
+        variation_directive = ""
+        if variation_total > 1:
+            angles = [
+                "different hook and opening style",
+                "personal story or experience angle",
+                "data-driven or statistic-led angle",
+                "contrarian or counter-intuitive take",
+                "question-led or thought-provoking opening",
+            ]
+            angle = angles[(variation_index - 1) % len(angles)]
+            variation_directive = (
+                f"## Variation {variation_index} of {variation_total}\n"
+                f"Use a **{angle}** — make this post meaningfully different "
+                f"from the other variations in opening style, structure, and emphasis. "
+                f"Do NOT start with the same word or phrase as the other variations.\n\n"
+            )
 
         # Prepend modification context when revising an existing post
         modification_prefix = ""
@@ -232,7 +258,7 @@ class ContentAgent:
                 f"## Recent Conversation Context\n{conversation_history}\n\n"
             )
 
-        user_prompt = modification_prefix + conversation_prefix + CONTENT_USER_PROMPT.format(
+        user_prompt = variation_directive + modification_prefix + conversation_prefix + CONTENT_USER_PROMPT.format(
             platform=platform,
             topic=topic,
             char_limit=char_limit,
