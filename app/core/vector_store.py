@@ -3,6 +3,7 @@ Vector store implementation for RAG operations.
 Supports Pinecone and Weaviate backends.
 """
 
+import datetime
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
@@ -13,6 +14,35 @@ from pydantic import BaseModel
 from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
+
+
+def _compute_recency_weight(posted_at: str) -> float:
+    """
+    Decay weight based on post age.
+      <= 30 days  -> 1.00
+      <= 90 days  -> 0.85
+      <= 180 days -> 0.70
+      <= 365 days -> 0.55
+      >  365 days -> 0.30
+      unknown     -> 0.50
+    """
+    if not posted_at:
+        return 0.5
+    try:
+        post_date = datetime.datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+        now = datetime.datetime.now(tz=post_date.tzinfo)
+        days = (now - post_date).days
+        if days <= 30:
+            return 1.00
+        if days <= 90:
+            return 0.85
+        if days <= 180:
+            return 0.70
+        if days <= 365:
+            return 0.55
+        return 0.30
+    except Exception:
+        return 0.5
 
 
 class VectorDocument(BaseModel):
@@ -691,6 +721,58 @@ class QdrantVectorStore(BaseVectorStore):
         )
         return len(points) > 0
 
+    def _scroll_top_by_score(
+        self,
+        collection_name: str,
+        filter_metadata: dict,
+        top_n: int,
+        scroll_limit: int = 200,
+    ) -> list[dict]:
+        """
+        Scroll up to scroll_limit posts, compute blended score
+        (performance_score × 0.6 + recency_weight × 0.4), return top_n.
+
+        This is the style baseline fetch — always returns results regardless of topic.
+        Cross-platform: no platform filter should be applied here for broader style signal.
+        """
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        conditions = [
+            FieldCondition(key=k, match=MatchValue(value=v))
+            for k, v in filter_metadata.items()
+        ]
+        scroll_filter = Filter(must=conditions) if conditions else None
+
+        points, _ = self.client.scroll(
+            collection_name=collection_name,
+            scroll_filter=scroll_filter,
+            limit=scroll_limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        scored = []
+        for point in points:
+            payload = point.payload or {}
+            perf = float(payload.get("performance_score", 0.0))
+            posted_at = payload.get("posted_at", "")
+            recency = _compute_recency_weight(posted_at)
+            blended = round((perf * 0.6) + (recency * 0.4), 4)
+            scored.append({
+                "type": "social_history",
+                "content": payload.get("content", ""),
+                "score": blended,
+                "platform": payload.get("platform"),
+                "posted_at": posted_at,
+                "hashtags": payload.get("hashtags", []),
+                "engagement": payload.get("engagement"),
+                "performance_score": perf,
+                "recency_weight": recency,
+            })
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:top_n]
+
 
 class WeaviateVectorStore(BaseVectorStore):
     """Weaviate vector store implementation."""
@@ -982,6 +1064,24 @@ class VectorStore:
         await self._store.delete(doc_ids, namespace=namespace)
 
     # --- Social Content Operations (social_memory_test collection) ---
+
+    async def fetch_top_social_by_score(
+        self,
+        user_id: str,
+        top_n: int = 10,
+    ) -> list[dict]:
+        """
+        Fetch top posts by blended score (performance × recency) across ALL platforms.
+
+        Used as the style baseline — always returns posts regardless of topic.
+        Cross-platform intentionally: style (emoji, length, hooks) is consistent
+        across platforms; only vocabulary/hashtags are platform-specific.
+        """
+        filters: dict[str, str] = {"user_id": user_id}
+        social_collection = settings.qdrant_social_collection
+        if isinstance(self._store, QdrantVectorStore):
+            return self._store._scroll_top_by_score(social_collection, filters, top_n)
+        return []
 
     async def add_social_content(
         self, user_id: str, documents: list[VectorDocument]

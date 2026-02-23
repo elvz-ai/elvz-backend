@@ -22,7 +22,7 @@ from app.core.llm_clients import LLMMessage, llm_client
 logger = structlog.get_logger(__name__)
 
 
-DECOMPOSITION_PROMPT = """Analyze this query and decompose it for multi-platform content generation.
+DECOMPOSITION_PROMPT = """Analyze this query and decompose it for content generation.
 
 Query: "{user_query}"
 
@@ -30,14 +30,18 @@ Detected Intent: {intent_type}
 Detected Entities: {entities}
 
 Available platforms: LinkedIn, Instagram, Facebook, Twitter, TikTok
+Maximum total queries: 5
 
-If the query requests content for multiple platforms:
-1. Extract each platform mentioned or implied
-2. Identify the common topic/theme
-3. Create a specific sub-query for each platform
-4. Assign priority (1 = highest)
+Rules:
+1. Multiple PLATFORMS → one query per platform (e.g., "LinkedIn and Twitter" → 2 queries)
+2. Multiple POSTS for the same platform → that many queries with the same platform
+   (e.g., "2 LinkedIn posts" → 2 queries both with platform: linkedin)
+3. Combination → expand fully (e.g., "2 for LinkedIn and 1 for Twitter" → 3 queries)
+4. Single platform, single post → one query (variation_index: 1, variation_total: 1)
+5. Never exceed 5 total queries — cap silently if the user asks for more
 
-If single platform or unclear, create one query for the detected/default platform.
+For same-platform batches, set variation_index (1-based) and variation_total on each query.
+For single posts or multi-platform posts, set variation_index: 1 and variation_total: 1.
 
 Respond in JSON:
 {{
@@ -49,7 +53,9 @@ Respond in JSON:
             "platform": "linkedin",
             "query": "specific task for this platform",
             "topic": "topic for this query",
-            "priority": 1
+            "priority": 1,
+            "variation_index": 1,
+            "variation_total": 1
         }}
     ]
 }}
@@ -94,12 +100,16 @@ class QueryDecomposerNode:
                         topic=(intent.get("entities") or {}).get("topic", ""),
                         priority=1,
                         status="pending",
+                        variation_index=1,
+                        variation_total=1,
                     )
                 ]
                 state["decomposition_complete"] = True
 
-            elif intent.get("type") == "multi_platform" or state.get("is_multi_platform"):
-                # Decompose multi-platform query
+            else:
+                # ALL artifact + multi_platform requests → LLM decomposition.
+                # The LLM handles: single post, multi-platform, quantity batches,
+                # and combinations (e.g. "2 for LinkedIn and 1 for Twitter").
                 decomposition = await self._decompose_query(
                     state["current_input"],
                     intent,
@@ -111,24 +121,6 @@ class QueryDecomposerNode:
                 # Store shared context in working memory
                 state["working_memory"]["shared_topic"] = decomposition.get("shared_topic")
                 state["working_memory"]["shared_tone"] = decomposition.get("shared_tone")
-
-            else:
-                # Single platform artifact request
-                platform = (
-                    (intent.get("entities") or {}).get("platform") or
-                    self._extract_platform(state["current_input"]) or
-                    "linkedin"  # Default platform
-                )
-
-                state["decomposed_queries"] = [
-                    DecomposedQuery(
-                        platform=platform,
-                        query=state["current_input"],
-                        topic=(intent.get("entities") or {}).get("topic", ""),
-                        priority=1,
-                        status="pending",
-                    )
-                ]
 
             state["decomposition_complete"] = True
             state["active_query_index"] = 0
@@ -234,6 +226,8 @@ class QueryDecomposerNode:
                     topic=q.get("topic") or result.get("shared_topic") or "",
                     priority=q.get("priority", i + 1),
                     status="pending",
+                    variation_index=q.get("variation_index", 1),
+                    variation_total=q.get("variation_total", 1),
                 )
                 for i, q in enumerate(queries)
             ]
