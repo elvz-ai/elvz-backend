@@ -146,10 +146,12 @@ class ContentAgent:
         # Get platform tips
         platform_tips = PLATFORM_TIPS.get(platform, PLATFORM_TIPS["linkedin"])
 
-        # Get content strategy from planner
+        # Get content strategy and expert persona from planner
         plan = state.get("plan") or {}
         content_strategy = plan.get("content_strategy") or {}
-
+        expert_persona = plan.get("expert_persona") or ""
+        # logger.info("expert_persona", expert_persona=expert_persona)
+        
         # Generate content using Grok
         content = await self._generate_content(
             platform=platform,
@@ -159,6 +161,7 @@ class ContentAgent:
             brand_context=brand_context,
             platform_tips=platform_tips,
             content_strategy=content_strategy,
+            expert_persona=expert_persona,
             rag_context=rag_context,
             conversation_history=conversation_history,
             previous_content=previous_content,
@@ -195,6 +198,7 @@ class ContentAgent:
         brand_context: str,
         platform_tips: str,
         content_strategy: dict,
+        expert_persona: str = "",
         rag_context: str = "",
         conversation_history: str = "",
         previous_content: str = "",
@@ -243,8 +247,10 @@ class ContentAgent:
             content_angle=content_strategy.get("content_angle", "Informative"),
         )
         
+        # Use planner's topic-specific expert persona if available, else fall back to generic prompt
+        system_prompt = expert_persona or CONTENT_SYSTEM_PROMPT
         messages = [
-            LLMMessage(role="system", content=CONTENT_SYSTEM_PROMPT),
+            LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=user_prompt),
         ]
         
