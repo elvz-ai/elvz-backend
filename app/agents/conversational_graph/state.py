@@ -28,6 +28,8 @@ class DecomposedQuery(TypedDict, total=False):
     topic: str
     priority: int
     status: str  # pending, in_progress, completed, failed
+    variation_index: int   # 1-based index within same-platform batch
+    variation_total: int   # total count for same platform (1 = not a batch)
 
 
 class GeneratedArtifact(TypedDict, total=False):

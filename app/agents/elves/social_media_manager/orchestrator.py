@@ -18,6 +18,7 @@ from app.agents.elves.social_media_manager.state import (
 )
 from app.agents.elves.social_media_manager.mini_agents import (
     ContentAgent,
+    ExpertPersonaAgent,
     OptimizationAgent,
     PlannerAgent,
     VideoAgent,
@@ -54,6 +55,7 @@ class SocialMediaManagerElf(BaseElf):
     def __init__(self):
         # Initialize mini-agents
         self.planner_agent = PlannerAgent()
+        self.expert_persona_agent = ExpertPersonaAgent()
         self.content_agent = ContentAgent()
         self.optimization_agent = OptimizationAgent()
         self.visual_agent = VisualAgent()
@@ -185,15 +187,41 @@ class SocialMediaManagerElf(BaseElf):
         return cleaned if len(cleaned) > 3 else message
     
     async def _run_planner(self, state: dict) -> dict:
-        """Run Planner agent to decide which downstream agents are needed."""
+        """Run Planner + ExpertPersona agents in parallel to decide strategy and build expert identity."""
         logger.debug("Running planner agent")
-        
+
         context = state.get("context", {})
-        
-        try:
-            result = await self.planner_agent.execute(state, context)
-            state["plan"] = result.get("plan", {})
-            
+        request = state.get("user_request", {})
+
+        # Run planner and expert persona generation concurrently (zero latency overhead)
+        planner_result, expert_persona = await asyncio.gather(
+            self.planner_agent.execute(state, context),
+            self.expert_persona_agent.generate(
+                topic=request.get("topic", ""),
+                platform=request.get("platform", "linkedin"),
+                content_type=request.get("content_type", "thought_leadership"),
+            ),
+            return_exceptions=True,
+        )
+
+        # Process planner result
+        if isinstance(planner_result, Exception):
+            logger.error("Planner agent failed", error=str(planner_result))
+            image_requested = context.get("image", False)
+            video_requested = context.get("video", False)
+            state["plan"] = {
+                "include_hashtags": True,
+                "include_visual": image_requested or video_requested,
+                "reasoning": "Fallback due to planner error",
+            }
+            state["errors"].append(f"planner: {str(planner_result)}")
+            state["execution_trace"].append({
+                "agent": "planner",
+                "status": "failed",
+                "error": str(planner_result),
+            })
+        else:
+            state["plan"] = planner_result.get("plan", {})
             state["execution_trace"].append({
                 "agent": "planner",
                 "status": "completed",
@@ -203,31 +231,20 @@ class SocialMediaManagerElf(BaseElf):
                     "include_video": state["plan"].get("include_video"),
                 },
             })
-
             logger.info(
                 "Planner completed",
                 include_hashtags=state["plan"].get("include_hashtags"),
                 include_visual=state["plan"].get("include_visual"),
                 include_video=state["plan"].get("include_video"),
             )
-            
-        except Exception as e:
-            logger.error("Planner agent failed", error=str(e))
-            # Default plan: include hashtags, visual based on image/video flags
-            image_requested = context.get("image", False)
-            video_requested = context.get("video", False)
-            state["plan"] = {
-                "include_hashtags": True,
-                "include_visual": image_requested or video_requested,
-                "reasoning": "Fallback due to planner error",
-            }
-            state["errors"].append(f"planner: {str(e)}")
-            state["execution_trace"].append({
-                "agent": "planner",
-                "status": "failed",
-                "error": str(e),
-            })
-        
+
+        # Inject expert persona into plan (empty string → content.py falls back to static prompt)
+        if isinstance(expert_persona, Exception):
+            logger.warning("Expert persona agent failed", error=str(expert_persona))
+            state["plan"]["expert_persona"] = ""
+        else:
+            state["plan"]["expert_persona"] = expert_persona or ""
+
         return state
     
     async def _run_parallel_agents(self, state: dict) -> dict:

@@ -16,13 +16,16 @@ from app.core.config import settings
 class RedisCache:
     """
     Redis cache manager with typed key patterns.
-    
+
     Key Patterns:
     - session:{session_id} - User session state (TTL: 1 hour)
     - voice_profile:{user_id} - Brand voice profile (TTL: 24 hours)
     - analytics:{user_id}:{timeframe} - Cached analytics (TTL: 1 hour)
     - tool_result:{tool_name}:{hash} - Tool call results (TTL: 6 hours)
+    - style_profile:{user_id} - Pre-computed writing style features (TTL: 7 days)
     """
+
+    STYLE_PROFILE_TTL = 7 * 24 * 3600  # 7 days
     
     def __init__(self):
         self._client: Optional[redis.Redis] = None
@@ -91,7 +94,19 @@ class RedisCache:
         """Invalidate voice profile cache."""
         key = f"voice_profile:{user_id}"
         await self.client.delete(key)
-    
+
+    # Style Profile Cache (pre-computed from social posts at webhook time)
+    async def set_style_profile(self, user_id: str, features: dict[str, Any]) -> None:
+        """Store pre-computed style features. TTL: 7 days."""
+        key = f"style_profile:{user_id}"
+        await self.client.setex(key, self.STYLE_PROFILE_TTL, json.dumps(features))
+
+    async def get_style_profile(self, user_id: str) -> Optional[dict[str, Any]]:
+        """Retrieve cached style profile, or None if not yet computed."""
+        key = f"style_profile:{user_id}"
+        data = await self.client.get(key)
+        return json.loads(data) if data else None
+
     # Analytics Cache
     async def set_analytics(
         self, user_id: str, timeframe: str, data: dict[str, Any]
