@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 from typing import Optional
 
+from app.api.deps import verify_api_key
 from app.core.database import get_db
 from app.models.execution_log import ExecutionLog, ExecutionStatus
 
@@ -21,6 +22,7 @@ async def list_execution_logs(
     conversation_id: Optional[str] = Query(None, description="Filter by conversation ID"),
     hours: int = Query(24, le=168, description="Time range in hours"),
     session: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_api_key),
 ):
     """
     List execution logs with filters.
@@ -72,6 +74,7 @@ async def list_execution_logs(
 async def get_execution_log(
     execution_id: str,
     session: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_api_key),
 ):
     """
     Get detailed execution log by ID.
@@ -108,6 +111,7 @@ async def get_conversation_logs(
     conversation_id: str,
     limit: int = Query(20, le=100),
     session: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_api_key),
 ):
     """Get all execution logs for a specific conversation."""
     result = await session.execute(
@@ -134,6 +138,7 @@ async def get_conversation_logs(
 async def get_monitoring_stats(
     hours: int = Query(24, le=168, description="Time range in hours"),
     session: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_api_key),
 ):
     """
     Get monitoring statistics.

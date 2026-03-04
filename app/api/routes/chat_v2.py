@@ -21,7 +21,7 @@ from app.services.hitl_service import hitl_service
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/chat/v2", tags=["chat-v2"])
+router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 class ConversationalChatRequest(BaseModel):

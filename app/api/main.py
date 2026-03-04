@@ -10,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
     assistant_router,
-    chat_router,
     copywriter_router,
     seo_router,
     social_media_router,
@@ -168,7 +167,6 @@ app.add_middleware(
 )
 
 # Include API routes
-app.include_router(chat_router, prefix=settings.api_v1_prefix)
 app.include_router(chat_v2_router, prefix=settings.api_v1_prefix)
 app.include_router(conversations_router, prefix=settings.api_v1_prefix)
 app.include_router(artifacts_router, prefix=settings.api_v1_prefix)

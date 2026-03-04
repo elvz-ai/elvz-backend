@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agents.elves.ai_assistant import AIAssistantElf
-from app.api.deps import get_current_user_id
+from app.api.deps import get_user_id
 
 logger = structlog.get_logger(__name__)
 
@@ -106,7 +106,7 @@ class GenerateDocumentRequest(BaseModel):
 @router.post("/manage-tasks")
 async def manage_tasks(
     request: ManageTasksRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Process task-related requests.
@@ -141,7 +141,7 @@ async def manage_tasks(
 @router.post("/draft-email")
 async def draft_email(
     request: DraftEmailRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Draft an email based on context.
@@ -177,7 +177,7 @@ async def draft_email(
 @router.post("/research")
 async def research(
     request: ResearchRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Conduct research on a topic.
@@ -215,7 +215,7 @@ async def research(
 @router.post("/summarize-meeting")
 async def summarize_meeting(
     request: SummarizeMeetingRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Summarize meeting notes and extract action items.
@@ -252,7 +252,7 @@ async def summarize_meeting(
 @router.post("/generate-document")
 async def generate_document(
     request: GenerateDocumentRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Generate a formatted document.

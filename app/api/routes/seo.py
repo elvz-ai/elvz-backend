@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, HttpUrl
 
 from app.agents.elves.seo_optimizer import SEOOptimizerElf
-from app.api.deps import get_current_user_id
+from app.api.deps import get_user_id
 
 logger = structlog.get_logger(__name__)
 
@@ -71,7 +71,7 @@ class KeywordResearchRequest(BaseModel):
 @router.post("/audit-site", response_model=AuditSiteResponse)
 async def audit_site(
     request: AuditSiteRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> AuditSiteResponse:
     """
     Perform comprehensive SEO audit on a website.
@@ -117,7 +117,7 @@ async def audit_site(
 @router.post("/optimize-page")
 async def optimize_page(
     request: OptimizePageRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Get optimization suggestions for a specific page.
@@ -163,7 +163,7 @@ async def optimize_page(
 @router.post("/keyword-research")
 async def keyword_research(
     request: KeywordResearchRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Research keywords related to seed keywords.
@@ -217,7 +217,7 @@ async def keyword_research(
 @router.get("/quick-check")
 async def quick_check(
     url: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Quick SEO health check for a URL.
