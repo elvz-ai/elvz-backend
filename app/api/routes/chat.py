@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agents.platform_orchestrator import orchestrator
-from app.api.deps import get_current_user_id
+from app.api.deps import get_user_id
 
 logger = structlog.get_logger(__name__)
 
@@ -49,7 +49,7 @@ class ChatResponse(BaseModel):
 @router.post("", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> ChatResponse:
     """
     Main chat endpoint - processes natural language requests.
@@ -102,7 +102,7 @@ async def chat(
 @router.get("/session/{session_id}")
 async def get_session(
     session_id: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """Get session information."""
     from app.core.cache import cache
@@ -121,7 +121,7 @@ async def get_session(
 @router.delete("/session/{session_id}")
 async def delete_session(
     session_id: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """Delete a session."""
     from app.core.cache import cache

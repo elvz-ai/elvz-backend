@@ -10,7 +10,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_current_user_id
+from app.api.deps import get_user_id
 from app.services.artifact_service import artifact_service
 from app.services.conversation_service import conversation_service
 
@@ -30,7 +30,7 @@ class ArtifactFeedbackRequest(BaseModel):
 @router.get("/{artifact_id}")
 async def get_artifact(
     artifact_id: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Get artifact details.
@@ -69,7 +69,7 @@ async def get_artifact(
 async def submit_feedback(
     artifact_id: str,
     feedback_request: ArtifactFeedbackRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Submit feedback for an artifact.
@@ -121,7 +121,7 @@ async def submit_feedback(
 @router.get("/batch/{batch_id}")
 async def get_artifact_batch(
     batch_id: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Get artifact batch with all artifacts.
@@ -165,7 +165,7 @@ async def get_artifact_batch(
 @router.get("/conversation/{conversation_id}")
 async def list_conversation_artifacts(
     conversation_id: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
     platform: Optional[str] = Query(None),
     artifact_type: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
@@ -221,7 +221,7 @@ async def list_conversation_artifacts(
 @router.delete("/{artifact_id}")
 async def delete_artifact(
     artifact_id: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Delete an artifact.
