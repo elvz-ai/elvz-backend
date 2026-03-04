@@ -295,12 +295,24 @@ async def invoke_conversation(
     # Get graph
     graph = await get_conversational_graph()
 
+    # Build request_context with resolved generation flags
+    from app.core.config import resolve_generation_flag
+    request_context = {}
+    if config:
+        request_context["image"] = resolve_generation_flag(
+            settings.enable_visual_generation, config.get("image", "auto")
+        )
+        request_context["video"] = resolve_generation_flag(
+            settings.enable_video_generation, config.get("video", "auto")
+        )
+
     # Create initial state
     initial_state = create_initial_state(
         conversation_id=conversation_id,
         user_id=user_id,
         thread_id=thread_id,
         user_input=user_input,
+        request_context=request_context,
     )
 
     # Store execution_id in state for tracking
@@ -505,11 +517,23 @@ async def stream_conversation_sse(
 
     graph = await get_conversational_graph()
 
+    # Build request_context with resolved generation flags
+    from app.core.config import resolve_generation_flag
+    request_context = {}
+    if config:
+        request_context["image"] = resolve_generation_flag(
+            settings.enable_visual_generation, config.get("image", "auto")
+        )
+        request_context["video"] = resolve_generation_flag(
+            settings.enable_video_generation, config.get("video", "auto")
+        )
+
     initial_state = create_initial_state(
         conversation_id=conversation_id,
         user_id=user_id,
         thread_id=thread_id,
         user_input=user_input,
+        request_context=request_context,
     )
     initial_state["execution_id"] = execution_id
 
@@ -624,9 +648,20 @@ async def stream_conversation(
         Streaming events from graph execution
     """
     from app.agents.conversational_graph.state import create_initial_state
+    from app.core.config import resolve_generation_flag, settings
 
     # Get graph
     graph = await get_conversational_graph()
+
+    # Build request_context with resolved generation flags
+    request_context = {}
+    if config:
+        request_context["image"] = resolve_generation_flag(
+            settings.enable_visual_generation, config.get("image", "auto")
+        )
+        request_context["video"] = resolve_generation_flag(
+            settings.enable_video_generation, config.get("video", "auto")
+        )
 
     # Create initial state
     initial_state = create_initial_state(
@@ -634,6 +669,7 @@ async def stream_conversation(
         user_id=user_id,
         thread_id=thread_id,
         user_input=user_input,
+        request_context=request_context,
     )
 
     # Build config

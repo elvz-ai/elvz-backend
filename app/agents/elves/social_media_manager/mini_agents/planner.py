@@ -143,28 +143,38 @@ class PlannerAgent:
             rag_context=rag_context,
         )
 
-        # Override visual/video decisions based on user flags
-        # User flags FORCE the decision (not just permission)
+        # Override visual/video decisions based on resolved flags
+        # "true" = force on, "false" = force off, "auto" = keep LLM's decision
 
         # Image flag controls include_visual
-        if image_requested:
+        image_mode = str(image_requested) if image_requested is not None else "auto"
+        if image_mode == "true":
             plan["include_visual"] = True
-            plan["visual_override_reason"] = "Image content requested by user (image=true)"
-            logger.debug("Visual agent ENABLED: image=true in request (forced)")
-        else:
+            plan["visual_override_reason"] = "Image forced on by request"
+            logger.debug("Visual agent ENABLED: image='true' (forced)")
+        elif image_mode == "false":
             plan["include_visual"] = False
-            plan["visual_override_reason"] = "Image content disabled by user (image=false)"
-            logger.debug("Visual agent DISABLED: image=false in request")
+            plan["visual_override_reason"] = "Image disabled by request"
+            logger.debug("Visual agent DISABLED: image='false'")
+        else:
+            # "auto" — keep the LLM's decision from _generate_plan()
+            plan["visual_override_reason"] = "Image mode 'auto' — LLM decided"
+            logger.debug("Visual agent: LLM decided", include_visual=plan.get("include_visual"))
 
         # Video flag controls include_video
-        if video_requested:
+        video_mode = str(video_requested) if video_requested is not None else "auto"
+        if video_mode == "true":
             plan["include_video"] = True
-            plan["video_override_reason"] = "Video content requested by user (video=true)"
-            logger.debug("Video agent ENABLED: video=true in request (forced)")
-        else:
+            plan["video_override_reason"] = "Video forced on by request"
+            logger.debug("Video agent ENABLED: video='true' (forced)")
+        elif video_mode == "false":
             plan["include_video"] = False
-            plan["video_override_reason"] = "Video content disabled by user (video=false)"
-            logger.debug("Video agent DISABLED: video=false in request")
+            plan["video_override_reason"] = "Video disabled by request"
+            logger.debug("Video agent DISABLED: video='false'")
+        else:
+            # "auto" — keep the LLM's decision from _generate_plan()
+            plan["video_override_reason"] = "Video mode 'auto' — LLM decided"
+            logger.debug("Video agent: LLM decided", include_video=plan.get("include_video"))
 
         # DEBUG: Print full planner output for debugging
         # logger.debug("=== FULL PLANNER OUTPUT ===", plan=plan)

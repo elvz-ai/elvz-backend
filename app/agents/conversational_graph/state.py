@@ -127,6 +127,9 @@ class ConversationState(TypedDict, total=False):
     final_response: Optional[str]
     suggestions: list[str]
 
+    # ==================== Request Context ====================
+    request_context: dict  # Per-request flags (image, video) from API caller
+
     # ==================== Execution Metadata ====================
     execution_trace: list[dict]  # [{node, status, time_ms, error}]
     errors: list[str]
@@ -140,6 +143,7 @@ def create_initial_state(
     user_id: str,
     thread_id: str,
     user_input: str,
+    request_context: dict | None = None,
 ) -> ConversationState:
     """
     Create initial state for a new conversation turn.
@@ -149,6 +153,7 @@ def create_initial_state(
         user_id: User identifier
         thread_id: LangGraph thread identifier
         user_input: User's message
+        request_context: Per-request flags (image, video) from API caller
 
     Returns:
         Initial conversation state
@@ -220,6 +225,9 @@ def create_initial_state(
         # Response
         final_response=None,
         suggestions=[],
+
+        # Request context
+        request_context=request_context or {},
 
         # Execution
         execution_trace=[],
