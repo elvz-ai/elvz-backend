@@ -10,7 +10,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_current_user_id
+from app.api.deps import get_user_id
 from app.core.config import settings
 from app.services.conversation_service import conversation_service
 
@@ -35,7 +35,7 @@ class ConversationDetailResponse(BaseModel):
 
 @router.get("", response_model=ConversationListResponse)
 async def list_conversations(
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     status: Optional[str] = Query(None),
@@ -81,7 +81,7 @@ async def list_conversations(
 @router.get("/{conversation_id}", response_model=ConversationDetailResponse)
 async def get_conversation(
     conversation_id: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
     include_messages: bool = Query(True),
     message_limit: int = Query(50, ge=1, le=200),
 ) -> ConversationDetailResponse:
@@ -134,7 +134,7 @@ async def get_conversation(
 @router.delete("/{conversation_id}")
 async def delete_conversation(
     conversation_id: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
     hard_delete: bool = Query(False),
 ) -> dict:
     """
@@ -186,7 +186,7 @@ async def delete_conversation(
 async def add_message(
     conversation_id: str,
     message: dict,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Add a message to a conversation.
@@ -233,7 +233,7 @@ async def add_message(
 @router.get("/{conversation_id}/summary")
 async def get_conversation_summary(
     conversation_id: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Get conversation summary with statistics.

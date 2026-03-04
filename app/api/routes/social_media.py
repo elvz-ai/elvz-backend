@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agents.elves.social_media_manager import SocialMediaManagerElf
-from app.api.deps import get_current_user_id
+from app.api.deps import get_user_id
 
 logger = structlog.get_logger(__name__)
 
@@ -83,7 +83,7 @@ class GenerateCalendarRequest(BaseModel):
 @router.post("/create-post", response_model=CreatePostResponse)
 async def create_post(
     request: CreatePostRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> CreatePostResponse:
     """
     Create social media post with multiple variations.
@@ -132,7 +132,7 @@ async def create_post(
 @router.post("/analyze-performance")
 async def analyze_performance(
     request: AnalyzePerformanceRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Analyze social media content performance.
@@ -175,7 +175,7 @@ async def analyze_performance(
 @router.post("/generate-calendar")
 async def generate_calendar(
     request: GenerateCalendarRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Generate a content calendar for specified duration.
@@ -226,7 +226,7 @@ async def generate_calendar(
 async def get_hashtag_suggestions(
     platform: str,
     topic: str,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """Get hashtag suggestions for a topic and platform."""
     from app.tools.registry import tool_registry

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agents.elves.copywriter import CopywriterElf
-from app.api.deps import get_current_user_id
+from app.api.deps import get_user_id
 
 logger = structlog.get_logger(__name__)
 
@@ -109,7 +109,7 @@ class RewriteRequest(BaseModel):
 @router.post("/write-blog", response_model=WriteBlogResponse)
 async def write_blog(
     request: WriteBlogRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> WriteBlogResponse:
     """
     Write a complete blog post.
@@ -158,7 +158,7 @@ async def write_blog(
 @router.post("/write-ad-copy")
 async def write_ad_copy(
     request: WriteAdCopyRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Write ad copy for specified platform.
@@ -202,7 +202,7 @@ async def write_ad_copy(
 @router.post("/write-product-description")
 async def write_product_description(
     request: WriteProductDescriptionRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Write compelling product description.
@@ -248,7 +248,7 @@ async def write_product_description(
 @router.post("/rewrite")
 async def rewrite_content(
     request: RewriteRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_user_id),
 ) -> dict:
     """
     Rewrite content with a different tone or purpose.
