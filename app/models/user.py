@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, JSON, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -32,7 +32,7 @@ class User(Base):
     subscription_tier: Mapped[str] = mapped_column(
         String(50), default=SubscriptionTier.FREE.value, nullable=False
     )
-    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
