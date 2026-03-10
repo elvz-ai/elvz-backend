@@ -96,7 +96,7 @@ class SocialMediaManagerElf(BaseElf):
         start_time = time.time()
         
         # Extract entities from context
-        entities = context.get("entities", {})
+        entities = context.get("entities") or {}
         
         # Build enriched request
         enriched_request = {
@@ -190,8 +190,8 @@ class SocialMediaManagerElf(BaseElf):
         """Run Planner + ExpertPersona agents in parallel to decide strategy and build expert identity."""
         logger.debug("Running planner agent")
 
-        context = state.get("context", {})
-        request = state.get("user_request", {})
+        context = state.get("context") or {}
+        request = state.get("user_request") or {}
 
         # Run planner and expert persona generation concurrently (zero latency overhead)
         planner_result, expert_persona = await asyncio.gather(
@@ -221,7 +221,7 @@ class SocialMediaManagerElf(BaseElf):
                 "error": str(planner_result),
             })
         else:
-            state["plan"] = planner_result.get("plan", {})
+            state["plan"] = planner_result.get("plan") or {}
             state["execution_trace"].append({
                 "agent": "planner",
                 "status": "completed",
@@ -371,7 +371,7 @@ class SocialMediaManagerElf(BaseElf):
                 content,
                 hashtags,
                 timing,
-                state.get("user_request", {}).get("platform", "linkedin")
+                (state.get("user_request") or {}).get("platform", "linkedin")
             ),
         )
         
@@ -443,7 +443,7 @@ class SocialMediaManagerElf(BaseElf):
     
     def _build_response(self, state: dict, execution_time_ms: int) -> dict:
         """Build final response from state."""
-        final_output = state.get("final_output", {})
+        final_output = state.get("final_output") or {}
         
         return {
             "post_variations": final_output.get("post_variations", []),

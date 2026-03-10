@@ -5,7 +5,7 @@ Persists conversation state to memory layers.
 """
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import structlog
 
@@ -68,7 +68,7 @@ class MemorySaverNode:
 
             # 4. Calculate total execution time
             if state.get("execution_start_time"):
-                total_time = datetime.utcnow() - state["execution_start_time"]
+                total_time = datetime.now(timezone.utc) - state["execution_start_time"]
                 state["working_memory"]["total_execution_ms"] = int(
                     total_time.total_seconds() * 1000
                 )
@@ -143,7 +143,7 @@ class MemorySaverNode:
             # Context
             "last_topic": (state.get("working_memory") or {}).get("shared_topic"),
             # Timestamps
-            "last_updated": datetime.utcnow().isoformat(),
+            "last_updated": datetime.now(timezone.utc).isoformat(),
         }
 
         await memory_manager.update_working_memory(
@@ -168,7 +168,7 @@ class MemorySaverNode:
             entry = {
                 **artifact,
                 "topic_summary": text[:80] if text else "untitled",
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
             history.append(entry)
 
@@ -248,7 +248,7 @@ class MemorySaverNode:
                     "platform": artifact.get("platform", "unknown"),
                     "category": "generated_content",
                     "conversation_id": state["conversation_id"],
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                     "engagement": {},  # To be updated later
                     "tags": content.get("hashtags", [])[:5] if content.get("hashtags") else [],
                 },
@@ -288,7 +288,7 @@ class MemorySaverNode:
         user_id = state["user_id"]
         conversation_id = state["conversation_id"]
         user_input = state.get("current_input", "")
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         min_query_length = settings.rag_min_save_length_query
         min_response_length = settings.rag_min_save_length_response
 

@@ -20,12 +20,14 @@ import httpx
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cache import cache
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.vector_store import VectorDocument, vector_store
+from app.models.user import User
 from app.models.user_style_profile import UserStyleProfile
 from app.services.rag_retriever import rag_retriever
 
@@ -199,6 +201,18 @@ async def extraction_complete(
         ]
         style_features = rag_retriever._extract_style_features(post_dicts)
         if style_features:
+            # Ensure user exists (FK to user.id is now enforced)
+            result = await db.execute(
+                select(User).where(User.id == payload.userId)
+            )
+            if result.scalar_one_or_none() is None:
+                db.add(User(
+                    id=payload.userId,
+                    email=f"{payload.userId}@elvz.local",
+                    name=payload.userId,
+                ))
+                await db.flush()
+
             # Upsert into PostgreSQL (durable source of truth)
             existing = await db.get(UserStyleProfile, payload.userId)
             if existing:

@@ -4,7 +4,7 @@ Uses Grok for fast, combined optimization in a single LLM call.
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import structlog
@@ -184,7 +184,7 @@ class OptimizationAgent:
         
         hashtag_strategy = hashtag_strategy or {}
         
-        current_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         # Prepare prompt inputs
         # If target_audience not provided (parallel execution), let LLM infer it
         target_audience_ctx = target_audience or "Infer based on topic and platform"
@@ -243,12 +243,12 @@ class OptimizationAgent:
         self,
         best_hour: int,
         best_days: list[str],
-        timezone: str,
+        user_timezone: str,
         platform: str,
     ) -> dict:
         """Build 3 timing options from LLM result."""
         
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         day_map = {
             "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
             "Friday": 4, "Saturday": 5, "Sunday": 6
@@ -313,6 +313,6 @@ class OptimizationAgent:
                     "day_of_week": optimal_times[1].strftime("%A"),
                 },
             ],
-            "timezone": timezone,
+            "timezone": user_timezone,
             "confidence": 0.85,
         }

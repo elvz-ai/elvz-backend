@@ -4,10 +4,11 @@ Stores generated content from the conversational chatbot.
 """
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -58,11 +59,6 @@ class ArtifactBatch(Base):
         String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
     )
 
-    # Query that generated this batch
-    query_decomposition_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("query_decompositions.id", ondelete="SET NULL")
-    )
-
     # Batch metadata
     platforms: Mapped[list] = mapped_column(ARRAY(String), nullable=False)
     topic: Mapped[Optional[str]] = mapped_column(String(500))
@@ -75,7 +71,7 @@ class ArtifactBatch(Base):
 
     # Performance tracking
     total_tokens_used: Mapped[int] = mapped_column(default=0)
-    total_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    total_cost: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=0)
     execution_time_ms: Mapped[int] = mapped_column(default=0)
 
     # Metadata
@@ -111,6 +107,7 @@ class ArtifactBatch(Base):
             "status": self.status,
             "artifact_count": self.artifact_count,
             "total_tokens_used": self.total_tokens_used,
+            "total_cost": float(self.total_cost) if self.total_cost else 0.0,
             "execution_time_ms": self.execution_time_ms,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,

@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, desc, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.api.deps import verify_api_key
@@ -29,7 +29,7 @@ async def list_execution_logs(
 
     Frontend will query this endpoint to display logs table.
     """
-    since = datetime.utcnow() - timedelta(hours=hours)
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     # Build query
     query = select(ExecutionLog).where(ExecutionLog.started_at >= since)
@@ -145,7 +145,7 @@ async def get_monitoring_stats(
 
     Returns counts by status, average duration, etc.
     """
-    since = datetime.utcnow() - timedelta(hours=hours)
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     result = await session.execute(
         select(ExecutionLog).where(ExecutionLog.started_at >= since)

@@ -5,7 +5,7 @@ Defines the TypedDict that flows through all nodes in the
 conversational graph, maintaining context across turns.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage
@@ -234,7 +234,7 @@ def create_initial_state(
         errors=[],
         total_tokens_used=0,
         total_cost=0.0,
-        execution_start_time=datetime.utcnow(),
+        execution_start_time=datetime.now(timezone.utc),
     )
 
 
@@ -261,7 +261,7 @@ def add_execution_trace(
         "node": node,
         "status": status,
         "time_ms": time_ms,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     if error:
@@ -294,7 +294,7 @@ def add_stream_event(
         type=event_type,
         node=node or state.get("current_node", "unknown"),
         content=content,
-        timestamp=datetime.utcnow().isoformat(),
+        timestamp=datetime.now(timezone.utc).isoformat(),
         metadata=metadata or {},
     )
 

@@ -5,7 +5,7 @@ CRUD operations and business logic for conversations.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
@@ -118,7 +118,6 @@ class ConversationService:
                 id=user_id,
                 email=f"{user_id}@elvz.local",
                 name=user_id,
-                hashed_password="dev_placeholder",
             )
             session.add(user)
             await session.flush()  # persist within current transaction
@@ -383,7 +382,7 @@ class ConversationService:
             await session.execute(
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
-                .values(last_message_at=datetime.utcnow())
+                .values(last_message_at=datetime.now(timezone.utc))
             )
 
             await session.commit()

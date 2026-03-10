@@ -17,7 +17,6 @@ from app.agents.conversational_graph.graph import invoke_conversation
 from app.api.deps import verify_api_key
 from app.core.config import settings
 from app.services.conversation_service import conversation_service
-from app.services.hitl_service import hitl_service
 
 logger = structlog.get_logger(__name__)
 
@@ -105,10 +104,8 @@ async def conversational_chat(
         suggestions = result_state.get("suggestions", [])
         artifacts = result_state.get("artifacts", [])
         
-        # Check for pending HITL requests
-        hitl_requests = await hitl_service.get_pending_requests(conversation_id)
-        hitl_request = hitl_requests[0].to_dict() if hitl_requests else None
-        
+        hitl_request = None
+
         # Build metadata
         metadata = {
             "intent": result_state.get("current_intent"),
@@ -242,62 +239,3 @@ async def conversational_chat_stream(
     )
 
 
-class HITLResponseRequest(BaseModel):
-    """HITL response request."""
-    request_id: str
-    response: str
-    user_id: str
-    selected_options: Optional[list] = None
-
-
-@router.post("/respond-hitl")
-async def respond_to_hitl(
-    request: HITLResponseRequest,
-    _api_key: str = Depends(verify_api_key),
-) -> dict:
-    """
-    Respond to a HITL request and resume conversation.
-    
-    Args:
-        request_id: HITL request identifier
-        response: User's response
-        selected_options: Selected option IDs
-        user_id: Current user ID (from auth)
-    
-    Returns:
-        Updated HITL request
-    """
-    try:
-        # Get HITL request
-        hitl_request = await hitl_service.get_request(request.request_id)
-
-        if not hitl_request:
-            raise HTTPException(status_code=404, detail="HITL request not found")
-
-        # Verify ownership
-        conversation = await conversation_service.get_conversation(
-            hitl_request.conversation_id
-        )
-
-        if not conversation or conversation.user_id != request.user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
-
-        # Respond to request
-        updated_request = await hitl_service.respond_to_request(
-            request_id=request.request_id,
-            response=request.response,
-            selected_options=request.selected_options,
-            action="approve",
-        )
-
-        # TODO: Resume conversation with user response
-        # This would involve re-invoking the graph with the HITL context
-
-        return updated_request.to_dict()
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("HITL response failed", error=str(e), request_id=request.request_id)
-        detail = str(e) if settings.environment == "development" else "Internal server error"
-        raise HTTPException(status_code=500, detail=detail)

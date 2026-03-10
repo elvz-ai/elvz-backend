@@ -16,7 +16,6 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.artifact import Artifact
-    from app.models.hitl import HITLRequest
     from app.models.user import User
 
 
@@ -44,7 +43,7 @@ class Conversation(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
     )
 
     # LangGraph integration
@@ -83,10 +82,6 @@ class Conversation(Base):
     artifacts: Mapped[list["Artifact"]] = relationship(
         "Artifact", back_populates="conversation", cascade="all, delete-orphan"
     )
-    hitl_requests: Mapped[list["HITLRequest"]] = relationship(
-        "HITLRequest", back_populates="conversation", cascade="all, delete-orphan"
-    )
-
     # Indexes
     __table_args__ = (
         Index("idx_conversations_user_status", "user_id", "status"),

@@ -5,7 +5,7 @@ CRUD operations and business logic for generated artifacts.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
@@ -263,7 +263,7 @@ class ArtifactService:
 
             artifact.status = ArtifactStatus.PUBLISHED.value
             artifact.was_published = True
-            artifact.published_at = datetime.utcnow()
+            artifact.published_at = datetime.now(timezone.utc)
 
             await session.commit()
             await session.refresh(artifact)
@@ -483,7 +483,7 @@ class ArtifactService:
                 return None
 
             batch.status = "complete"
-            batch.completed_at = datetime.utcnow()
+            batch.completed_at = datetime.now(timezone.utc)
             batch.total_tokens_used = total_tokens
             batch.total_cost = total_cost
             batch.execution_time_ms = execution_time_ms
@@ -532,7 +532,6 @@ class ArtifactService:
                     id=user_id,
                     email=f"{user_id}@elvz.local",
                     name=user_id,
-                    hashed_password="dev_placeholder",
                 ))
                 await session.flush()
 

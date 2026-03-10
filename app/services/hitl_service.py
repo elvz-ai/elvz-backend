@@ -5,7 +5,7 @@ Manages HITL request lifecycle, user responses, and conversation resumption.
 """
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import structlog
@@ -60,7 +60,7 @@ class HITLService:
             Created HITLRequest
         """
         timeout_seconds = timeout_seconds or settings.hitl_request_timeout_seconds
-        expires_at = datetime.utcnow() + timedelta(seconds=timeout_seconds)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
 
         async def _create(session: AsyncSession) -> HITLRequest:
             request = HITLRequest(
@@ -173,7 +173,7 @@ class HITLService:
             # Update request
             request.response = response
             request.selected_options = selected_options
-            request.responded_at = datetime.utcnow()
+            request.responded_at = datetime.now(timezone.utc)
             request.responder_notes = notes
 
             if action == "approve":
@@ -213,7 +213,7 @@ class HITLService:
             Number of requests expired
         """
         async def _expire(session: AsyncSession) -> int:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             stmt = select(HITLRequest).where(
                 HITLRequest.status == HITLStatus.PENDING.value,
@@ -257,7 +257,7 @@ class HITLService:
                 raise ValueError(f"HITL request {request_id} is not pending")
 
             request.status = HITLStatus.CANCELLED.value
-            request.responded_at = datetime.utcnow()
+            request.responded_at = datetime.now(timezone.utc)
 
             await session.commit()
             await session.refresh(request)

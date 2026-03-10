@@ -1,7 +1,7 @@
 """Background execution logger with minimal latency impact."""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import structlog
 from sqlalchemy import update
@@ -108,7 +108,7 @@ class ExecutionLogger:
             "conversation_id": conversation_id,
             "user_id": user_id,
             "request_message": request_message,
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
         })
 
     def log_execution_completed(
@@ -133,7 +133,7 @@ class ExecutionLogger:
             "error_summary": error_summary,
             "failed_nodes": failed_nodes or [],
             "start_time": start_time,
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
         })
 
     def _build_node_outputs(self, execution_trace: list) -> dict:

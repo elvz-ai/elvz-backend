@@ -13,7 +13,7 @@ is built from in-memory data and returned immediately.
 import asyncio
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
@@ -93,7 +93,6 @@ async def _persist_all(
                     id=user_id,
                     email=f"{user_id}@elvz.local",
                     name=user_id,
-                    hashed_password="dev_placeholder",
                 ))
 
             # 2. Create headless conversation
@@ -115,7 +114,7 @@ async def _persist_all(
                 status="complete",
                 execution_strategy="parallel",
                 execution_time_ms=execution_time_ms,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
             ))
 
             # 4. Create all artifacts

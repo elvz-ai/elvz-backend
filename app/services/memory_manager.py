@@ -9,7 +9,7 @@ Layers:
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
@@ -21,7 +21,7 @@ from app.core.config import settings
 from app.core.database import get_db_context
 from app.core.vector_store import vector_store
 from app.models.conversation import Conversation, Message
-from app.models.user import BrandVoiceProfile, User, UserProfile
+from app.models.user import User
 
 logger = structlog.get_logger(__name__)
 
@@ -85,7 +85,7 @@ class MemoryManager:
             data = existing
 
         # Add timestamp
-        data["_updated_at"] = datetime.utcnow().isoformat()
+        data["_updated_at"] = datetime.now(timezone.utc).isoformat()
 
         await cache.set(key, json.dumps(data), ttl=settings.memory_working_ttl)
         logger.debug("Working memory updated", conversation_id=conversation_id)
@@ -300,7 +300,6 @@ class MemoryManager:
 
         # Fetch from database
         async def _fetch(session: AsyncSession) -> Optional[dict]:
-            # Get user with profile and brand voice
             stmt = select(User).where(User.id == user_id)
             result = await session.execute(stmt)
             user = result.scalar_one_or_none()
@@ -308,45 +307,13 @@ class MemoryManager:
             if not user:
                 return None
 
-            # Get profile
-            profile_stmt = select(UserProfile).where(UserProfile.user_id == user_id)
-            profile_result = await session.execute(profile_stmt)
-            profile = profile_result.scalar_one_or_none()
-
-            # Get brand voice
-            voice_stmt = select(BrandVoiceProfile).where(BrandVoiceProfile.user_id == user_id)
-            voice_result = await session.execute(voice_stmt)
-            brand_voice = voice_result.scalar_one_or_none()
-
             profile_data = {
                 "user_id": user_id,
                 "email": user.email,
                 "name": user.name,
-                "subscription_tier": user.subscription_tier,
                 "profile": None,
                 "brand_voice": None,
             }
-
-            if profile:
-                profile_data["profile"] = {
-                    "brand_name": profile.brand_name,
-                    "industry": profile.industry,
-                    "brand_voice_description": profile.brand_voice,
-                    "tone_preferences": profile.tone_preferences,
-                    "target_audience": profile.target_audience,
-                    "social_platforms": profile.social_platforms,
-                }
-
-            if brand_voice:
-                profile_data["brand_voice"] = {
-                    "tone_characteristics": brand_voice.tone_characteristics,
-                    "vocabulary_patterns": brand_voice.vocabulary_patterns,
-                    "personality_traits": brand_voice.personality_traits,
-                    "content_patterns": brand_voice.content_patterns,
-                    "sample_phrases": brand_voice.sample_phrases,
-                    "confidence_score": brand_voice.confidence_score,
-                }
-                profile_data["brand_voice_context"] = brand_voice.to_prompt_context()
 
             return profile_data
 
@@ -399,7 +366,7 @@ class MemoryManager:
         context = {
             "conversation_id": conversation_id,
             "user_id": user_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         # Layer 1: Working memory
@@ -462,7 +429,7 @@ class MemoryManager:
             conversation = result.scalar_one_or_none()
 
             if conversation:
-                conversation.last_message_at = datetime.utcnow()
+                conversation.last_message_at = datetime.now(timezone.utc)
 
             await session.commit()
             return message_id

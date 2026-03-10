@@ -3,7 +3,7 @@ Research tools for information gathering.
 Tools for web search, document parsing, and data collection.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -100,21 +100,21 @@ class WebSearchTool(BaseTool[WebSearchInput, WebSearchOutput]):
                 url=f"https://example.com/guide-{input_data.query.replace(' ', '-')}",
                 snippet=f"Learn everything you need to know about {input_data.query}. This comprehensive guide covers...",
                 source="example.com",
-                published_date=datetime.utcnow(),
+                published_date=datetime.now(timezone.utc),
             ),
             SearchResult(
                 title=f"{input_data.query}: Best Practices and Strategies",
                 url=f"https://blog.example.com/{input_data.query.replace(' ', '-')}-strategies",
                 snippet=f"Discover the best practices for {input_data.query}. Our experts share their insights...",
                 source="blog.example.com",
-                published_date=datetime.utcnow(),
+                published_date=datetime.now(timezone.utc),
             ),
             SearchResult(
                 title=f"Top 10 Tips for {input_data.query}",
                 url=f"https://tips.example.com/{input_data.query.replace(' ', '-')}-tips",
                 snippet=f"Looking to improve your {input_data.query}? Here are the top 10 tips from industry experts...",
                 source="tips.example.com",
-                published_date=datetime.utcnow(),
+                published_date=datetime.now(timezone.utc),
             ),
         ]
         

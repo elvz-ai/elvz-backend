@@ -439,12 +439,12 @@ class MultiPlatformOrchestratorNode:
 
     def _get_brand_info(self, state: ConversationState) -> dict:
         """Extract brand info from user profile."""
-        profile = state.get("user_profile", {})
+        profile = state.get("user_profile") or {}
 
         if not profile:
             return {}
 
-        user_profile = profile.get("profile", {})
+        user_profile = profile.get("profile") or {}
 
         return {
             "brand_name": user_profile.get("brand_name", ""),
