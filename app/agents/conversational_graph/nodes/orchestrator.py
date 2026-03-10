@@ -295,11 +295,12 @@ class MultiPlatformOrchestratorNode:
                     state.get("modification_feedback") or state.get("current_input", "")
                 )
 
-            # Build context for Elf
+            # Build context for Elf — use resolved flags from request_context
+            req_ctx = state.get("request_context") or {}
             context = {
                 "user_id": state["user_id"],
-                "image": settings.enable_visual_generation,
-                "video": settings.enable_video_generation,
+                "image": req_ctx.get("image", "false"),
+                "video": req_ctx.get("video", "false"),
                 "brand_info": self._get_brand_info(state),
             }
 

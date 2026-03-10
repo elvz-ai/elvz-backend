@@ -213,3 +213,23 @@ def get_settings() -> Settings:
 
 settings = get_settings()
 
+
+def resolve_generation_flag(env_enabled: bool, api_param) -> str:
+    """
+    Resolve a two-level generation flag (env gate + per-request control).
+
+    Returns 'true', 'false', or 'auto'.
+
+    - env_enabled=False → always 'false' (server-wide kill switch)
+    - api_param='true'/True → 'true' (force on)
+    - api_param='false'/False → 'false' (force off)
+    - api_param='auto'/None/missing → 'auto' (LLM decides)
+    """
+    if not env_enabled:
+        return "false"
+    if api_param in ("true", True):
+        return "true"
+    if api_param in ("false", False):
+        return "false"
+    return "auto"
+

@@ -19,6 +19,8 @@ from app.models.artifact import (
     ArtifactStatus,
     ArtifactType,
 )
+from app.models.conversation import Conversation, ConversationStatus
+from app.models.user import User
 
 logger = structlog.get_logger(__name__)
 
@@ -495,6 +497,73 @@ class ArtifactService:
 
         async with get_db_context() as session:
             return await _update(session)
+
+    # ==================== Wizard Operations ====================
+
+    async def create_wizard_batch(
+        self,
+        user_id: str,
+        platforms: list[str],
+        topic: Optional[str] = None,
+    ) -> dict:
+        """
+        Create a headless conversation + artifact batch for the wizard flow.
+
+        The wizard doesn't use multi-turn chat, so we create a minimal
+        conversation as a container for artifacts and a batch to group them.
+
+        Args:
+            user_id: User identifier
+            platforms: Target platforms
+            topic: Content topic/idea
+
+        Returns:
+            Dict with conversation_id and batch_id
+        """
+        conversation_id = str(uuid.uuid4())
+        batch_id = str(uuid.uuid4())
+        thread_id = str(uuid.uuid4())
+
+        async with get_db_context() as session:
+            # Ensure user exists (creates placeholder in dev when auth is bypassed)
+            result = await session.execute(select(User).where(User.id == user_id))
+            if result.scalar_one_or_none() is None:
+                session.add(User(
+                    id=user_id,
+                    email=f"{user_id}@elvz.local",
+                    name=user_id,
+                    hashed_password="dev_placeholder",
+                ))
+                await session.flush()
+
+            # Create headless conversation (no messages, just an artifact container)
+            conversation = Conversation(
+                id=conversation_id,
+                user_id=user_id,
+                thread_id=thread_id,
+                title=topic[:255] if topic else "New Post",
+                status=ConversationStatus.ACTIVE.value,
+                extra_metadata={"source": "wizard", "platforms": platforms},
+            )
+            session.add(conversation)
+
+            # Create batch
+            batch = ArtifactBatch(
+                id=batch_id,
+                conversation_id=conversation_id,
+                platforms=platforms,
+                topic=topic,
+                status="in_progress",
+                execution_strategy="parallel",
+            )
+            session.add(batch)
+
+            await session.commit()
+
+            return {
+                "conversation_id": conversation_id,
+                "batch_id": batch_id,
+            }
 
 
 # Global instance

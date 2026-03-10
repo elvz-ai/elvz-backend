@@ -254,23 +254,31 @@ class SocialMediaManagerElf(BaseElf):
 
         include_hashtags = plan.get("include_hashtags", True)
 
-        # Check if image/video content is requested and allowed by user flags
-        image_requested = context.get("image", False)
-        video_requested = context.get("video", False)
+        # Resolve image/video using three-way flags: "true", "false", "auto"
+        image_mode = context.get("image", "false")
+        video_mode = context.get("video", "false")
 
-        # Include visual only if planner suggests it AND user allows it (image=true)
-        include_visual = plan.get("include_visual", False) and image_requested
+        if image_mode == "true":
+            include_visual = True
+        elif image_mode == "auto":
+            include_visual = plan.get("include_visual", False)  # LLM's decision
+        else:
+            include_visual = False
 
-        # Include video only if planner suggests it AND user allows it (video=true)
-        include_video = plan.get("include_video", False) and video_requested
+        if video_mode == "true":
+            include_video = True
+        elif video_mode == "auto":
+            include_video = plan.get("include_video", False)  # LLM's decision
+        else:
+            include_video = False
 
         logger.debug(
             "Running parallel agents",
             include_hashtags=include_hashtags,
             include_visual=include_visual,
             include_video=include_video,
-            image_requested=image_requested,
-            video_requested=video_requested,
+            image_mode=image_mode,
+            video_mode=video_mode,
         )
 
         # Content agent ALWAYS runs
