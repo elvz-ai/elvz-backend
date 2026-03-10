@@ -114,9 +114,9 @@ def _verify_api_key(x_api_key: Optional[str]) -> None:
     If elvz_api_key is not set (empty), validation is skipped in development
     but enforced in production.
     """
-    if not settings.elvz_next_api_key:
+    if not settings.elvz_api_key:
         if settings.environment == "production":
-            logger.warning("elvz_next_api_key not configured in production — rejecting request")
+            logger.warning("elvz_api_key not configured in production — rejecting request")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Webhook authentication is not configured on this server",
@@ -130,7 +130,7 @@ def _verify_api_key(x_api_key: Optional[str]) -> None:
         )
 
     if not hmac.compare_digest(
-        settings.elvz_next_api_key.encode(),
+        settings.elvz_api_key.encode(),
         x_api_key.encode(),
     ):
         raise HTTPException(
@@ -250,7 +250,7 @@ async def _fetch_posts(extraction_job_id: str) -> list[ExtractedPost]:
     and return the list of extracted posts.
     """
     url = f"{settings.elvz_nextjs_base_url}/api/internal/posts"
-    headers = {"x-api-key": settings.elvz_next_api_key}
+    headers = {"x-api-key": settings.elvz_api_key}
     params = {"extractionJobId": extraction_job_id}
 
     logger.debug(
