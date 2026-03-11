@@ -68,12 +68,21 @@ class DataCheckerNode:
                     "Please connect your social media account at "
                     "https://www.elvz.ai/elves/social-media-manager to get started."
                 )
+                # Persist blocked reason so QA/clarification paths can see it
+                state["working_memory"]["last_blocked"] = {
+                    "reason": "social_not_connected",
+                    "platforms": missing_platforms,
+                }
                 logger.info(
                     "Social media not connected — blocking artifact generation",
                     user_id=user_id,
                     missing=missing_platforms,
                 )
-            elif missing_platforms:
+            else:
+                # All platforms have data — clear any prior blocked state
+                state["working_memory"]["last_blocked"] = None
+
+            if missing_platforms and len(missing_platforms) < len(platforms):
                 # Some platforms connected, some not — proceed with note
                 state["working_memory"]["reduced_personalization"] = True
                 connected = [p for p in platforms if p not in missing_platforms]

@@ -175,10 +175,37 @@ class StreamAggregatorNode:
             "You are Elvz, an AI assistant specializing in social media content strategy "
             "and creation. You have full access to the current conversation history in the "
             "messages below — use it to recall what was discussed and maintain continuity.\n\n"
-            "Answer the user's question helpfully and concisely. "
-            "If the user seems to want content created, suggest they ask you to generate it."
+            "Answer the user's question helpfully and concisely.\n\n"
+            "IMPORTANT: You must NEVER write or generate full social media posts, captions, "
+            "or drafts in your response. Content generation is handled by a separate "
+            "specialized pipeline with optimization, hashtags, and style matching. "
+            "If the user wants content created, tell them to ask you to 'create' or "
+            "'generate' a post so the content pipeline handles it properly."
             + brand_voice_section
         )
+
+        # Inject blocked context if user was recently blocked from generating
+        blocked = (state.get("working_memory") or {}).get("last_blocked")
+        if blocked:
+            # Verify the block is still valid — user may have connected since
+            from app.core.cache import cache
+            user_id = state.get("user_id", "")
+            style_profile = await cache.get_style_profile(user_id)
+            if style_profile:
+                # User has connected — clear stale blocked state
+                blocked = None
+                state["working_memory"]["last_blocked"] = None
+                logger.info("Cleared stale last_blocked — user now has style profile", user_id=user_id)
+            else:
+                blocked_platforms = ", ".join(
+                    p.title() for p in (blocked.get("platforms") or [])
+                )
+                system_prompt += (
+                    f"\n\nCRITICAL: The user has NOT connected their {blocked_platforms} "
+                    "social media account. They were blocked from generating content. "
+                    "Do NOT generate any posts. Remind them to connect their social media "
+                    "account at https://www.elvz.ai/elves/social-media-manager first."
+                )
 
         # Build messages with conversation history
         messages = [LLMMessage(role="system", content=system_prompt)]
