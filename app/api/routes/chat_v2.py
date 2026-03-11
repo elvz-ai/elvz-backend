@@ -69,6 +69,7 @@ async def conversational_chat(
     """
     user_id = request.user_id
 
+    logger.info("=" * 80)
     logger.info(
         "Conversational chat request",
         user_id=user_id,
@@ -115,6 +116,8 @@ async def conversational_chat(
             "guardrail_passed": result_state.get("guardrail_passed", True),
         }
         
+        logger.info("=" * 80)
+
         return ConversationalChatResponse(
             response=final_response,
             conversation_id=conversation_id,
@@ -137,6 +140,7 @@ async def conversational_chat(
         raise
     except Exception as e:
         logger.error("Conversational chat failed", error=str(e), user_id=user_id)
+        logger.info("=" * 80)
         detail = str(e) if settings.environment == "development" else "Internal server error"
         raise HTTPException(status_code=500, detail=detail)
 
@@ -162,6 +166,7 @@ async def conversational_chat_stream(
 
     user_id = request.user_id
 
+    logger.info("=" * 80)
     logger.info(
         "Streaming chat request",
         user_id=user_id,

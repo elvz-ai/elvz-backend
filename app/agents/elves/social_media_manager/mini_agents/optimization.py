@@ -130,12 +130,12 @@ class OptimizationAgent:
             content_output = state.get("content_output", {})
             target_audience = content_output.get("target_audience")
         
-        timezone = context.get("timezone", "UTC")
-        
+        user_timezone = context.get("timezone", "UTC")
+
         logger.info(
             "Optimization agent executing",
             platform=platform,
-            timezone=timezone,
+            timezone=user_timezone,
         )
         
         # Get platform-specific info
@@ -151,17 +151,17 @@ class OptimizationAgent:
             platform=platform,
             topic=topic,
             target_audience=target_audience,
-            timezone=timezone,
+            timezone=user_timezone,
             hashtag_limit=hashtag_limit,
             best_times=best_times,
             hashtag_strategy=hashtag_strategy,
         )
-        
+
         # Build timing options from LLM result
         timing = self._build_timing_options(
             optimization.get("best_hour", best_times["best_hour"]),
             optimization.get("best_days", best_times["best_days"]),
-            timezone,
+            user_timezone,
             platform,
         )
         
@@ -175,15 +175,15 @@ class OptimizationAgent:
         platform: str,
         topic: str,
         target_audience: str,
-        timezone: str,
+        user_timezone: str,
         hashtag_limit: int,
         best_times: dict,
         hashtag_strategy: dict,
     ) -> dict:
         """Generate optimization using Grok."""
-        
+
         hashtag_strategy = hashtag_strategy or {}
-        
+
         current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         # Prepare prompt inputs
         # If target_audience not provided (parallel execution), let LLM infer it
@@ -194,7 +194,7 @@ class OptimizationAgent:
             topic=topic,
             target_audience=target_audience_ctx,
             current_time=current_time,
-            timezone=timezone,
+            timezone=user_timezone,
             hashtag_limit=hashtag_limit,
             best_times=f"{best_times['best_days']} at {best_times['best_hour']}:00 - {best_times['notes']}",
             focus=hashtag_strategy.get("focus", "discovery"),
