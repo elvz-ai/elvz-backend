@@ -151,7 +151,7 @@ class OptimizationAgent:
             platform=platform,
             topic=topic,
             target_audience=target_audience,
-            timezone=user_timezone,
+            user_timezone=user_timezone,
             hashtag_limit=hashtag_limit,
             best_times=best_times,
             hashtag_strategy=hashtag_strategy,
