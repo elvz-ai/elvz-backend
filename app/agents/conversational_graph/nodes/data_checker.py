@@ -1,9 +1,9 @@
 """
 Data Checker Node.
 
-Verifies that required user data is available in the social_memory_test
-Qdrant collection for content generation. Blocks artifact generation
-when the user has not connected their social media.
+Verifies that the user has an active social media connection by querying
+the connected_social_platform table. Blocks artifact generation when the
+user has not connected (or has disconnected / token expired).
 """
 
 import time
@@ -21,11 +21,12 @@ logger = structlog.get_logger(__name__)
 
 class DataCheckerNode:
     """
-    Checks availability of user data in the social_memory_test collection.
+    Checks the connected_social_platform table for active connections.
 
-    When ALL requested platforms have no data, sets social_not_connected=True
-    and writes a final_response telling the user to connect their social media.
-    The graph's conditional edge then skips artifact generation.
+    When ALL requested platforms lack an active connection, sets
+    social_not_connected=True and writes a final_response telling the user
+    to connect their social media.  The graph's conditional edge then skips
+    artifact generation.
     """
 
     async def __call__(self, state: ConversationState) -> ConversationState:
@@ -156,15 +157,27 @@ class DataCheckerNode:
         return list(set(platforms))
 
     async def _check_platform_data(self, user_id: str, platform: str) -> bool:
-        """Check if user has scraped social data in social_memory_test collection."""
-        from app.core.vector_store import vector_store
+        """Check if user has an active connection in connected_social_platform table."""
+        from sqlalchemy import select
+
+        from app.core.database import get_db_context
+        from app.models.connected_social_platform import ConnectedSocialPlatform
 
         try:
-            return await vector_store.has_social_content(
-                user_id=user_id, platform=platform
-            )
+            async with get_db_context() as db:
+                stmt = (
+                    select(ConnectedSocialPlatform.id)
+                    .where(
+                        ConnectedSocialPlatform.user_id == user_id,
+                        ConnectedSocialPlatform.platform == platform,
+                        ConnectedSocialPlatform.status == "active",
+                    )
+                    .limit(1)
+                )
+                result = await db.execute(stmt)
+                return result.scalar_one_or_none() is not None
         except Exception as e:
-            logger.warning(f"Error checking social content: {e}")
+            logger.warning(f"Error checking connected platform: {e}")
             return False
 
 

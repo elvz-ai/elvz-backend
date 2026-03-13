@@ -188,20 +188,40 @@ class StreamAggregatorNode:
         blocked = (state.get("working_memory") or {}).get("last_blocked")
         if blocked:
             # Verify the block is still valid — user may have connected since
-            from app.core.cache import cache
+            from sqlalchemy import select
+
+            from app.core.database import get_db_context
+            from app.models.connected_social_platform import ConnectedSocialPlatform
+
             user_id = state.get("user_id", "")
-            style_profile = await cache.get_style_profile(user_id)
-            if style_profile:
-                # User has connected — clear stale blocked state
-                blocked = None
-                state["working_memory"]["last_blocked"] = None
-                logger.info("Cleared stale last_blocked — user now has style profile", user_id=user_id)
-            else:
-                blocked_platforms = ", ".join(
-                    p.title() for p in (blocked.get("platforms") or [])
-                )
+            blocked_platforms = blocked.get("platforms") or []
+
+            try:
+                async with get_db_context() as db:
+                    stmt = (
+                        select(ConnectedSocialPlatform.id)
+                        .where(
+                            ConnectedSocialPlatform.user_id == user_id,
+                            ConnectedSocialPlatform.platform.in_(blocked_platforms),
+                            ConnectedSocialPlatform.status == "active",
+                        )
+                        .limit(1)
+                    )
+                    result = await db.execute(stmt)
+                    if result.scalar_one_or_none() is not None:
+                        blocked = None
+                        state["working_memory"]["last_blocked"] = None
+                        logger.info(
+                            "Cleared stale last_blocked — user now has active connection",
+                            user_id=user_id,
+                        )
+            except Exception as e:
+                logger.warning("Failed to validate last_blocked", error=str(e))
+
+            if blocked:
+                platform_names = ", ".join(p.title() for p in blocked_platforms)
                 system_prompt += (
-                    f"\n\nCRITICAL: The user has NOT connected their {blocked_platforms} "
+                    f"\n\nCRITICAL: The user has NOT connected their {platform_names} "
                     "social media account. They were blocked from generating content. "
                     "Do NOT generate any posts. Remind them to connect their social media "
                     "account at https://www.elvz.ai/elves/social-media-manager first."

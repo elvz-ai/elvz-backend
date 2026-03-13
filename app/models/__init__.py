@@ -4,6 +4,7 @@ from app.models.user import User
 from app.models.content import ContentHistory, Task
 from app.models.analytics import Analytics, APIUsage
 from app.models.user_style_profile import UserStyleProfile
+from app.models.connected_social_platform import ConnectedSocialPlatform
 
 __all__ = [
     "User",
@@ -12,4 +13,5 @@ __all__ = [
     "Analytics",
     "APIUsage",
     "UserStyleProfile",
+    "ConnectedSocialPlatform",
 ]
