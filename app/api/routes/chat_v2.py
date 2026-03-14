@@ -31,6 +31,7 @@ class ConversationalChatRequest(BaseModel):
     context: Optional[dict] = None
     image: Optional[str] = Field(default="auto", description="Image generation: 'auto' (LLM decides), 'true' (always), 'false' (never)")
     video: Optional[str] = Field(default="auto", description="Video generation: 'auto' (LLM decides), 'true' (always), 'false' (never)")
+    elf_type: Optional[str] = Field(default=None, description="Explicit elf routing: 'social-media-manager', 'seo-optimizer', 'copy-writer', 'ai-assistant'. When omitted, auto-detected via intent classification.")
 
 
 class ConversationalChatResponse(BaseModel):
@@ -90,6 +91,8 @@ async def conversational_chat(
         graph_config = request.context or {}
         graph_config["image"] = request.image
         graph_config["video"] = request.video
+        if request.elf_type:
+            graph_config["elf_type"] = request.elf_type
 
         # Invoke conversational graph
         result_state = await invoke_conversation(
@@ -110,6 +113,7 @@ async def conversational_chat(
         # Build metadata
         metadata = {
             "intent": result_state.get("current_intent"),
+            "elf_type": result_state.get("selected_elf_type"),
             "nodes_executed": [trace.get("node") for trace in result_state.get("execution_trace", [])],
             "tokens_used": result_state.get("total_tokens_used", 0),
             "cost": result_state.get("total_cost", 0.0),
@@ -193,6 +197,8 @@ async def conversational_chat_stream(
     stream_config = request.context or {}
     stream_config["image"] = request.image
     stream_config["video"] = request.video
+    if request.elf_type:
+        stream_config["elf_type"] = request.elf_type
 
     async def sse_generator():
         # Run graph in background, pushing events to event_bus
@@ -225,6 +231,7 @@ async def conversational_chat_stream(
                 "requires_approval": (final_state or {}).get(
                     "requires_approval", False
                 ),
+                "elf_type": (final_state or {}).get("selected_elf_type"),
             }
             yield f"event: done\ndata: {json.dumps(done_data)}\n\n"
 

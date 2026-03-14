@@ -127,6 +127,9 @@ class ConversationState(TypedDict, total=False):
     final_response: Optional[str]
     suggestions: list[str]
 
+    # ==================== Elf Routing ====================
+    selected_elf_type: Optional[str]  # ElfType value when explicitly routed, None for auto-detect
+
     # ==================== Request Context ====================
     request_context: dict  # Per-request flags (image, video) from API caller
 
@@ -225,6 +228,9 @@ def create_initial_state(
         # Response
         final_response=None,
         suggestions=[],
+
+        # Elf routing
+        selected_elf_type=(request_context or {}).get("elf_type"),
 
         # Request context
         request_context=request_context or {},

@@ -26,23 +26,37 @@ class MultiPlatformOrchestratorNode:
     """
     Orchestrates content generation across platforms.
 
-    Calls the existing SocialMediaManagerElf for each platform
-    and collects results.
+    Routes to the appropriate Elf based on selected_elf_type in state.
+    Defaults to SocialMediaManagerElf for backward compatibility.
     """
 
     def __init__(self):
-        self._elf = None
+        self._elves: dict[str, Any] = {}
 
-    async def _get_elf(self):
-        """Lazy load the SocialMediaManagerElf."""
-        if self._elf is None:
+    async def _get_elf(self, elf_type: str = "social_media"):
+        """Lazy load the appropriate Elf based on type."""
+        if elf_type not in self._elves:
             try:
-                from app.agents.elves.social_media_manager.orchestrator import SocialMediaManagerElf
-                self._elf = SocialMediaManagerElf()
+                if elf_type == "social_media":
+                    from app.agents.elves.social_media_manager.orchestrator import SocialMediaManagerElf
+                    self._elves[elf_type] = SocialMediaManagerElf()
+                elif elf_type == "seo":
+                    from app.agents.elves.seo_optimizer.orchestrator import SEOOptimizerElf
+                    self._elves[elf_type] = SEOOptimizerElf()
+                elif elf_type == "copywriter":
+                    from app.agents.elves.copywriter.orchestrator import CopywriterElf
+                    self._elves[elf_type] = CopywriterElf()
+                elif elf_type == "assistant":
+                    from app.agents.elves.ai_assistant.orchestrator import AIAssistantElf
+                    self._elves[elf_type] = AIAssistantElf()
+                else:
+                    from app.agents.elves.social_media_manager.orchestrator import SocialMediaManagerElf
+                    self._elves[elf_type] = SocialMediaManagerElf()
+                    logger.warning(f"Unknown elf_type '{elf_type}', falling back to social_media")
             except ImportError as e:
-                logger.error(f"Failed to import SocialMediaManagerElf: {e}")
+                logger.error(f"Failed to import elf for type '{elf_type}': {e}")
                 raise
-        return self._elf
+        return self._elves[elf_type]
 
     async def __call__(self, state: ConversationState) -> ConversationState:
         """
@@ -143,8 +157,9 @@ class MultiPlatformOrchestratorNode:
                 return state
 
             # Build final response
-            state["final_response"] = self._build_response(artifacts, queries)
-            state["suggestions"] = self._get_suggestions(artifacts)
+            elf_type = state.get("selected_elf_type") or "social_media"
+            state["final_response"] = self._build_response(artifacts, queries, elf_type)
+            state["suggestions"] = self._get_suggestions(artifacts, elf_type)
 
             execution_time = int((time.time() - start_time) * 1000)
             add_execution_trace(
@@ -265,8 +280,9 @@ class MultiPlatformOrchestratorNode:
         start_time = time.time()
 
         try:
-            # Get the Elf
-            elf = await self._get_elf()
+            # Get the appropriate Elf
+            elf_type = state.get("selected_elf_type") or "social_media"
+            elf = await self._get_elf(elf_type)
 
             # Build request for Elf
             working_memory = state.get("working_memory") or {}
@@ -324,7 +340,7 @@ class MultiPlatformOrchestratorNode:
             generation_time = int((time.time() - start_time) * 1000)
 
             # Build artifact from result
-            content = self._extract_content(result)
+            content = self._extract_content(result, elf_type)
             artifact = GeneratedArtifact(
                 id=str(uuid.uuid4()),
                 platform=platform,
@@ -351,12 +367,35 @@ class MultiPlatformOrchestratorNode:
             state["generation_progress"][platform] = -1  # Mark as failed
             raise
 
-    def _extract_content(self, result: dict) -> dict:
-        """Extract content from Elf result."""
+    def _extract_content(self, result: dict, elf_type: str = "social_media") -> dict:
+        """Extract content from Elf result based on elf type."""
         if not result:
             return {}
 
-        content = {}
+        if elf_type == "social_media":
+            return self._extract_social_media_content(result)
+
+        # Generic extraction for non-social-media elvz
+        content: dict[str, Any] = {}
+
+        # Try common text fields
+        if isinstance(result.get("content"), str):
+            content["text"] = result["content"]
+        elif result.get("response"):
+            content["text"] = result["response"]
+        elif result.get("summary"):
+            content["text"] = result["summary"]
+        else:
+            content["text"] = ""
+
+        # Pass through the full structured result for the frontend to render
+        content["structured_data"] = result
+        content["elf_type"] = elf_type
+        return content
+
+    def _extract_social_media_content(self, result: dict) -> dict:
+        """Extract content specifically from SocialMediaManagerElf results."""
+        content: dict[str, Any] = {}
 
         # Primary path: SocialMediaManagerElf returns post_variations
         variations = result.get("post_variations", [])
@@ -452,11 +491,29 @@ class MultiPlatformOrchestratorNode:
             "brand_voice": user_profile.get("brand_voice_description", ""),
         }
 
-    def _build_response(self, artifacts: list, queries: list) -> str:
+    def _build_response(self, artifacts: list, queries: list, elf_type: str = "social_media") -> str:
         """Build response message from generated artifacts."""
         if not artifacts:
             return "I couldn't generate any content. Please try again."
 
+        # Non-social-media elvz: use the text from structured_data
+        if elf_type != "social_media":
+            if len(artifacts) == 1:
+                content = artifacts[0].get("content") or {}
+                text = content.get("text", "")
+                if text:
+                    return text
+                # Fall back to a summary of structured data
+                return "Here's the generated content. Check the artifacts for full details."
+
+            response = f"Here are {len(artifacts)} generated results:\n\n"
+            for i, artifact in enumerate(artifacts, 1):
+                content = artifact.get("content") or {}
+                text = (content.get("text") or "")[:200]
+                response += f"**Result {i}:**\n{text}\n\n"
+            return response
+
+        # Social media response formatting
         if len(artifacts) == 1:
             artifact = artifacts[0]
             content = artifact.get("content") or {}
@@ -503,18 +560,40 @@ class MultiPlatformOrchestratorNode:
             response += "Would you like me to show the full content for any platform?"
             return response
 
-    def _get_suggestions(self, artifacts: list) -> list[str]:
-        """Generate follow-up suggestions."""
-        suggestions = []
+    def _get_suggestions(self, artifacts: list, elf_type: str = "social_media") -> list[str]:
+        """Generate follow-up suggestions based on elf type."""
+        if not artifacts:
+            return []
 
-        if artifacts:
-            suggestions.append("Generate an image for this post")
-            suggestions.append("Adjust the tone")
-            suggestions.append("Create a variation")
+        if elf_type == "seo":
+            return [
+                "Show more details",
+                "Audit another page",
+                "Suggest keyword improvements",
+                "Compare with a competitor",
+            ]
+        elif elf_type == "copywriter":
+            return [
+                "Adjust the tone",
+                "Make it shorter",
+                "Create a variation",
+                "Write for a different audience",
+            ]
+        elif elf_type == "assistant":
+            return [
+                "Tell me more",
+                "Summarize this",
+                "Draft an email about this",
+            ]
 
+        # Social media (default)
+        suggestions = [
+            "Generate an image for this post",
+            "Adjust the tone",
+            "Create a variation",
+        ]
         if len(artifacts) == 1:
             suggestions.append("Create for another platform")
-
         return suggestions[:4]
 
 

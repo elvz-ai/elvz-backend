@@ -305,6 +305,12 @@ async def invoke_conversation(
         request_context["video"] = resolve_generation_flag(
             settings.enable_video_generation, config.get("video", "auto")
         )
+        # Resolve explicit elf routing (frontend kebab-case -> backend ElfType value)
+        if config.get("elf_type"):
+            from app.agents.platform_orchestrator.intent_classifier import resolve_elf_type
+            resolved = resolve_elf_type(config["elf_type"])
+            if resolved:
+                request_context["elf_type"] = resolved.value
 
     # Create initial state
     initial_state = create_initial_state(
@@ -527,6 +533,12 @@ async def stream_conversation_sse(
         request_context["video"] = resolve_generation_flag(
             settings.enable_video_generation, config.get("video", "auto")
         )
+        # Resolve explicit elf routing (frontend kebab-case -> backend ElfType value)
+        if config.get("elf_type"):
+            from app.agents.platform_orchestrator.intent_classifier import resolve_elf_type
+            resolved = resolve_elf_type(config["elf_type"])
+            if resolved:
+                request_context["elf_type"] = resolved.value
 
     initial_state = create_initial_state(
         conversation_id=conversation_id,

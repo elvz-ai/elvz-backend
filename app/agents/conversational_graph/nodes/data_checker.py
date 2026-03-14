@@ -36,6 +36,22 @@ class DataCheckerNode:
         add_stream_event(state, "node_started", node="data_checker")
 
         try:
+            # Non-social elvz don't need social media connections
+            selected_elf = state.get("selected_elf_type")
+            if selected_elf and selected_elf != "social_media":
+                state["data_available"] = {}
+                state["missing_data_platforms"] = []
+                state["social_not_connected"] = False
+
+                execution_time = int((time.time() - start_time) * 1000)
+                add_execution_trace(
+                    state, "data_checker", "completed", execution_time,
+                    metadata={"skipped": True, "reason": f"elf_type={selected_elf}"},
+                )
+                add_stream_event(state, "node_completed", node="data_checker")
+                logger.info("Data check skipped for non-social elf", elf_type=selected_elf)
+                return state
+
             user_id = state["user_id"]
             platforms = self._get_platforms(state)
 

@@ -24,6 +24,20 @@ class ElfType(str, Enum):
     MULTI = "multi"  # When multiple Elves needed
 
 
+# Frontend kebab-case name -> Backend ElfType mapping
+FRONTEND_ELF_MAP: dict[str, ElfType] = {
+    "social-media-manager": ElfType.SOCIAL_MEDIA,
+    "seo-optimizer": ElfType.SEO,
+    "copy-writer": ElfType.COPYWRITER,
+    "ai-assistant": ElfType.ASSISTANT,
+}
+
+
+def resolve_elf_type(frontend_name: str) -> Optional[ElfType]:
+    """Map a frontend elf name (kebab-case) to the backend ElfType enum."""
+    return FRONTEND_ELF_MAP.get(frontend_name)
+
+
 class IntentType(str, Enum):
     """Types of user intents."""
     # Social Media
