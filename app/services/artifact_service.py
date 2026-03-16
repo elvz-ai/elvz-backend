@@ -601,14 +601,14 @@ class ArtifactService:
                 # No actual changes — return as-is
                 return artifact
 
-            # Build revision entry
-            history = dict(artifact.edit_history or {})
-            revision = len(history) + 1
-            history[str(revision)] = {
+            # Append revision entry (array of objects, no version key)
+            history = list(artifact.edit_history or [])
+            history.append({
                 "diff": diff,
+                "after_edit": new_content,
                 "source": source,
                 "at": datetime.now(timezone.utc).isoformat(),
-            }
+            })
 
             artifact.content = new_content
             artifact.edit_history = history

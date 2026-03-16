@@ -160,9 +160,9 @@ class Artifact(Base):
     # Used by the brain to compare AI output vs user-edited final version
     original_content: Mapped[Optional[dict]] = mapped_column(JSONB)
 
-    # Edit history keyed by revision number
-    # {"1": {"diff": {...}, "source": "user_edit", "at": "..."}, "2": {...}}
-    edit_history: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Edit history as append-only array of objects, ordered by `at`
+    # [{"diff": {...}, "after_edit": {...}, "source": "user_edit", "at": "..."}, ...]
+    edit_history: Mapped[list] = mapped_column(JSONB, default=list)
 
     # User feedback
     user_rating: Mapped[Optional[int]] = mapped_column()  # 1-5 stars
