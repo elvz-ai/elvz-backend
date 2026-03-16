@@ -17,9 +17,7 @@ from app.models.artifact import (
     Artifact,
     ArtifactBatch,
     ArtifactStatus,
-    ArtifactType,
 )
-from app.models.conversation import Conversation, ConversationStatus
 from app.models.user import User
 
 logger = structlog.get_logger(__name__)
@@ -36,10 +34,11 @@ class ArtifactService:
 
     async def create_artifact(
         self,
-        conversation_id: str,
+        user_id: str,
         artifact_type: str,
         platform: str,
         content: dict,
+        conversation_id: Optional[str] = None,
         message_id: Optional[str] = None,
         batch_id: Optional[str] = None,
         generation_metadata: Optional[dict] = None,
@@ -49,10 +48,11 @@ class ArtifactService:
         Create a new artifact.
 
         Args:
-            conversation_id: Conversation identifier
+            user_id: User identifier (required)
             artifact_type: Type of artifact
             platform: Target platform
             content: Artifact content
+            conversation_id: Optional conversation identifier
             message_id: Optional message ID
             batch_id: Optional batch ID
             generation_metadata: Generation metadata
@@ -66,6 +66,7 @@ class ArtifactService:
         async def _create(session: AsyncSession) -> Artifact:
             artifact = Artifact(
                 id=artifact_id,
+                user_id=user_id,
                 conversation_id=conversation_id,
                 message_id=message_id,
                 batch_id=batch_id,
@@ -507,10 +508,7 @@ class ArtifactService:
         topic: Optional[str] = None,
     ) -> dict:
         """
-        Create a headless conversation + artifact batch for the wizard flow.
-
-        The wizard doesn't use multi-turn chat, so we create a minimal
-        conversation as a container for artifacts and a batch to group them.
+        Create an artifact batch for the wizard flow (no conversation).
 
         Args:
             user_id: User identifier
@@ -518,11 +516,9 @@ class ArtifactService:
             topic: Content topic/idea
 
         Returns:
-            Dict with conversation_id and batch_id
+            Dict with batch_id
         """
-        conversation_id = str(uuid.uuid4())
         batch_id = str(uuid.uuid4())
-        thread_id = str(uuid.uuid4())
 
         async with get_db_context() as session:
             # Ensure user exists (creates placeholder in dev when auth is bypassed)
@@ -535,21 +531,11 @@ class ArtifactService:
                 ))
                 await session.flush()
 
-            # Create headless conversation (no messages, just an artifact container)
-            conversation = Conversation(
-                id=conversation_id,
-                user_id=user_id,
-                thread_id=thread_id,
-                title=topic[:255] if topic else "New Post",
-                status=ConversationStatus.ACTIVE.value,
-                extra_metadata={"source": "wizard", "platforms": platforms},
-            )
-            session.add(conversation)
-
-            # Create batch
+            # Create batch (no conversation in wizard flow)
             batch = ArtifactBatch(
                 id=batch_id,
-                conversation_id=conversation_id,
+                user_id=user_id,
+                conversation_id=None,
                 platforms=platforms,
                 topic=topic,
                 status="in_progress",
@@ -560,7 +546,6 @@ class ArtifactService:
             await session.commit()
 
             return {
-                "conversation_id": conversation_id,
                 "batch_id": batch_id,
             }
 

@@ -482,7 +482,8 @@ async def _persist_artifacts_to_db(state: dict) -> None:
 
     batch_id = state.get("artifact_batch_id")
     conversation_id = state.get("conversation_id")
-    if not conversation_id or not batch_id:
+    user_id = state.get("user_id")
+    if not batch_id or not user_id:
         return
 
     async with get_db_context() as session:
@@ -497,6 +498,7 @@ async def _persist_artifacts_to_db(state: dict) -> None:
         # 2. Create batch row
         session.add(ArtifactBatch(
             id=batch_id,
+            user_id=user_id,
             conversation_id=conversation_id,
             platforms=platforms,
             topic=topic or None,
@@ -512,6 +514,7 @@ async def _persist_artifacts_to_db(state: dict) -> None:
             artifact_content = artifact.get("content", {})
             session.add(Artifact(
                 id=artifact.get("id"),
+                user_id=user_id,
                 conversation_id=conversation_id,
                 batch_id=batch_id,
                 artifact_type=artifact.get("artifact_type", "social_post"),

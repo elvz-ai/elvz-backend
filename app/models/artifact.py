@@ -16,6 +16,7 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.conversation import Conversation, Message
+    from app.models.user import User
 
 
 class ArtifactType(str, Enum):
@@ -55,8 +56,11 @@ class ArtifactBatch(Base):
     __tablename__ = "artifact_batches"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    conversation_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    conversation_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), index=True
     )
 
     # Batch metadata
@@ -84,7 +88,8 @@ class ArtifactBatch(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Relationships
-    conversation: Mapped["Conversation"] = relationship("Conversation")
+    user: Mapped["User"] = relationship("User")
+    conversation: Mapped[Optional["Conversation"]] = relationship("Conversation")
     artifacts: Mapped[list["Artifact"]] = relationship(
         "Artifact", back_populates="batch", cascade="all, delete-orphan"
     )
@@ -123,8 +128,11 @@ class Artifact(Base):
     __tablename__ = "artifacts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    conversation_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    conversation_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), index=True
     )
     message_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("messages.id", ondelete="SET NULL")
@@ -192,7 +200,8 @@ class Artifact(Base):
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Relationships
-    conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="artifacts")
+    user: Mapped["User"] = relationship("User")
+    conversation: Mapped[Optional["Conversation"]] = relationship("Conversation", back_populates="artifacts")
     message: Mapped[Optional["Message"]] = relationship("Message")
     batch: Mapped[Optional["ArtifactBatch"]] = relationship("ArtifactBatch", back_populates="artifacts")
 
