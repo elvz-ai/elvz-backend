@@ -126,6 +126,7 @@ async def _persist_all(
                     artifact_type="social_post",
                     platform=data["platform"],
                     content=data["content"],
+                    original_content=data["content"],  # snapshot for brain
                     status=ArtifactStatus.DRAFT.value,
                     generation_metadata=data["metadata"],
                 ))

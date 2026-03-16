@@ -435,6 +435,12 @@ async def _background_post_response(
         logger.error("Background memory save failed", error=str(e))
 
     try:
+        # 1.5. Persist artifacts to PostgreSQL (artifacts + artifact_batches tables)
+        await _persist_artifacts_to_db(result)
+    except Exception as e:
+        logger.error("Background artifact DB persist failed", error=str(e))
+
+    try:
         # 2. Log execution completion
         duration_ms = int((time.time() - start_time) * 1000)
         errors = result.get("errors", [])
@@ -461,6 +467,73 @@ async def _background_post_response(
         )
     except Exception as e:
         logger.error("Background execution log failed", error=str(e))
+
+
+async def _persist_artifacts_to_db(state: dict) -> None:
+    """Persist generated artifacts to the artifacts & artifact_batches PostgreSQL tables."""
+    from datetime import datetime, timezone
+
+    from app.core.database import get_db_context
+    from app.models.artifact import Artifact, ArtifactBatch, ArtifactStatus
+
+    artifacts = state.get("artifacts", [])
+    if not artifacts:
+        return
+
+    batch_id = state.get("artifact_batch_id")
+    conversation_id = state.get("conversation_id")
+    if not conversation_id or not batch_id:
+        return
+
+    async with get_db_context() as session:
+        # 1. Compute batch-level metadata
+        platforms = list({a.get("platform") for a in artifacts if a.get("platform")})
+        decomposed = state.get("decomposed_queries") or []
+        topic = decomposed[0].get("topic", "") if decomposed else ""
+        execution_time_ms = sum(
+            t.get("time_ms", 0) for t in state.get("execution_trace", [])
+        )
+
+        # 2. Create batch row
+        session.add(ArtifactBatch(
+            id=batch_id,
+            conversation_id=conversation_id,
+            platforms=platforms,
+            topic=topic or None,
+            status="complete",
+            execution_strategy="parallel" if len(artifacts) > 1 else "sequential",
+            total_tokens_used=state.get("total_tokens_used", 0),
+            execution_time_ms=execution_time_ms,
+            completed_at=datetime.now(timezone.utc),
+        ))
+
+        # 3. Create artifact rows
+        for artifact in artifacts:
+            artifact_content = artifact.get("content", {})
+            session.add(Artifact(
+                id=artifact.get("id"),
+                conversation_id=conversation_id,
+                batch_id=batch_id,
+                artifact_type=artifact.get("artifact_type", "social_post"),
+                platform=artifact.get("platform"),
+                content=artifact_content,
+                original_content=artifact_content,  # snapshot for brain
+                status=ArtifactStatus.DRAFT.value,
+                generation_metadata={
+                    "tokens_used": artifact.get("tokens_used", 0),
+                    "generation_time_ms": artifact.get("generation_time_ms", 0),
+                    "elf_type": state.get("selected_elf_type", "social_media"),
+                },
+            ))
+
+        # get_db_context auto-commits on exit
+
+    logger.info(
+        "Artifacts persisted to DB",
+        conversation_id=conversation_id,
+        batch_id=batch_id,
+        artifact_count=len(artifacts),
+    )
 
 
 # ---------------------------------------------------------------------------

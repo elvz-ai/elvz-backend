@@ -565,5 +565,78 @@ class ArtifactService:
             }
 
 
+    async def update_artifact_content(
+        self,
+        artifact_id: str,
+        updates: dict,
+        source: str = "user_edit",
+        db: Optional[AsyncSession] = None,
+    ) -> Optional[Artifact]:
+        """
+        Merge partial updates into artifact content and record the edit.
+
+        Args:
+            artifact_id: Artifact identifier
+            updates: Only the changed fields (e.g. {"text": "...", "hashtags": [...]})
+            source: Edit source ("user_edit", "regeneration")
+            db: Optional database session
+
+        Creates a revision entry with a field-level diff so the brain
+        can learn from user editing patterns.
+        """
+        async def _update(session: AsyncSession) -> Optional[Artifact]:
+            artifact = await self.get_artifact(artifact_id, session)
+            if not artifact:
+                return None
+
+            old_content = artifact.content or {}
+
+            # Merge updates into existing content (unchanged fields preserved)
+            new_content = {**old_content, **updates}
+
+            # Compute diff only on the fields that were sent
+            diff = _compute_content_diff(old_content, new_content)
+
+            if not diff:
+                # No actual changes — return as-is
+                return artifact
+
+            # Build revision entry
+            history = dict(artifact.edit_history or {})
+            revision = len(history) + 1
+            history[str(revision)] = {
+                "diff": diff,
+                "source": source,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+
+            artifact.content = new_content
+            artifact.edit_history = history
+            artifact.was_edited = True
+
+            await session.commit()
+            await session.refresh(artifact)
+            return artifact
+
+        if db:
+            return await _update(db)
+        async with get_db_context() as session:
+            return await _update(session)
+
+
+def _compute_content_diff(old: dict, new: dict) -> dict:
+    """Compute field-level diff between two content dicts."""
+    diff = {"added": {}, "removed": {}, "changed": {}}
+    for key in set(old) | set(new):
+        if key not in old:
+            diff["added"][key] = new[key]
+        elif key not in new:
+            diff["removed"][key] = old[key]
+        elif old[key] != new[key]:
+            diff["changed"][key] = {"old": old[key], "new": new[key]}
+    # Drop empty sections
+    return {k: v for k, v in diff.items() if v}
+
+
 # Global instance
 artifact_service = ArtifactService()

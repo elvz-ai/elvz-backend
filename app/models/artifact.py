@@ -156,6 +156,14 @@ class Artifact(Base):
         String(50), default=ArtifactStatus.DRAFT.value, nullable=False
     )
 
+    # Original AI-generated content (set once at creation, never changes)
+    # Used by the brain to compare AI output vs user-edited final version
+    original_content: Mapped[Optional[dict]] = mapped_column(JSONB)
+
+    # Edit history keyed by revision number
+    # {"1": {"diff": {...}, "source": "user_edit", "at": "..."}, "2": {...}}
+    edit_history: Mapped[dict] = mapped_column(JSONB, default=dict)
+
     # User feedback
     user_rating: Mapped[Optional[int]] = mapped_column()  # 1-5 stars
     user_feedback: Mapped[Optional[str]] = mapped_column(Text)
@@ -207,8 +215,10 @@ class Artifact(Base):
             "artifact_type": self.artifact_type,
             "platform": self.platform,
             "content": self.content,
+            "original_content": self.original_content,
             "status": self.status,
             "user_rating": self.user_rating,
+            "was_edited": self.was_edited,
             "was_published": self.was_published,
             "generation_metadata": self.generation_metadata,
             "created_at": self.created_at.isoformat() if self.created_at else None,

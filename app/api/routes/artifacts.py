@@ -27,6 +27,18 @@ class ArtifactFeedbackRequest(BaseModel):
     was_published: bool = False
 
 
+class ArtifactContentUpdate(BaseModel):
+    """Request for updating editable artifact fields.
+
+    Only send the fields that changed. Omitted fields keep their current values.
+    The server merges updates into the existing content JSONB and tracks the diff.
+    """
+    text: Optional[str] = None
+    hashtags: Optional[list[str]] = None
+    image_url: Optional[str] = None
+    schedule: Optional[dict] = None
+
+
 @router.get("/{artifact_id}")
 async def get_artifact(
     artifact_id: str,
@@ -112,6 +124,66 @@ async def submit_feedback(
     except Exception as e:
         logger.error(
             "Failed to submit feedback",
+            error=str(e),
+            artifact_id=artifact_id,
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{artifact_id}/content")
+async def update_content(
+    artifact_id: str,
+    request: ArtifactContentUpdate,
+    user_id: str = Depends(get_user_id),
+) -> dict:
+    """
+    Update artifact content and track the edit for brain training.
+
+    Send only the fields that changed (text, hashtags, image_url, schedule).
+    Omitted fields keep their current values. The server merges updates into
+    the existing content JSONB, computes a field-level diff, and appends it
+    to edit_history. The original AI-generated content is preserved in
+    original_content.
+
+    Args:
+        artifact_id: Artifact identifier
+        request: Editable fields (text, hashtags, image_url, schedule)
+        user_id: Current user ID (from auth)
+
+    Returns:
+        Updated artifact
+    """
+    try:
+        # Build partial update from only non-None fields
+        updates = {k: v for k, v in request.model_dump().items() if v is not None}
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        artifact = await artifact_service.get_artifact(artifact_id)
+
+        if not artifact:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+        # Verify ownership
+        conversation = await conversation_service.get_conversation(
+            artifact.conversation_id
+        )
+
+        if not conversation or conversation.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        updated_artifact = await artifact_service.update_artifact_content(
+            artifact_id=artifact_id,
+            updates=updates,
+        )
+
+        return updated_artifact.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Failed to update artifact content",
             error=str(e),
             artifact_id=artifact_id,
         )
