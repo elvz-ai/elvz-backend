@@ -55,14 +55,11 @@ class DataCheckerNode:
             user_id = state["user_id"]
             platforms = self._get_platforms(state)
 
-            data_available = {}
-            missing_platforms = []
+            # Single query: fetch all active connected platforms for this user
+            connected_set = await self._get_connected_platforms(user_id)
 
-            for platform in platforms:
-                has_data = await self._check_platform_data(user_id, platform)
-                data_available[platform] = has_data
-                if not has_data:
-                    missing_platforms.append(platform)
+            data_available = {p: (p in connected_set) for p in platforms}
+            missing_platforms = [p for p in platforms if p not in connected_set]
 
             state["data_available"] = data_available
             state["missing_data_platforms"] = missing_platforms
@@ -76,8 +73,8 @@ class DataCheckerNode:
             state["working_memory"]["has_user_profile"] = has_profile
             state["working_memory"]["has_brand_voice"] = has_brand_voice
 
-            if missing_platforms and len(missing_platforms) == len(platforms):
-                # No social media data at all — user hasn't connected
+            if len(missing_platforms) == len(platforms):
+                # No requested platforms are connected — block entirely
                 state["social_not_connected"] = True
                 platform_names = ", ".join(p.title() for p in missing_platforms)
                 state["final_response"] = (
@@ -85,7 +82,6 @@ class DataCheckerNode:
                     "Please connect your social media account at "
                     "https://www.elvz.ai/elves/social-media-manager to get started."
                 )
-                # Persist blocked reason so QA/clarification paths can see it
                 state["working_memory"]["last_blocked"] = {
                     "reason": "social_not_connected",
                     "platforms": missing_platforms,
@@ -96,16 +92,20 @@ class DataCheckerNode:
                     missing=missing_platforms,
                 )
             else:
-                # All platforms have data — clear any prior blocked state
+                # At least some platforms connected — clear any prior blocked state
                 state["working_memory"]["last_blocked"] = None
 
             if missing_platforms and len(missing_platforms) < len(platforms):
-                # Some platforms connected, some not — proceed with note
-                state["working_memory"]["reduced_personalization"] = True
-                connected = [p for p in platforms if p not in missing_platforms]
-                state["working_memory"]["personalization_note"] = (
-                    f"Note: Limited personalization for {', '.join(missing_platforms)}. "
-                    f"Data available for: {', '.join(connected)}."
+                # Filter decomposed_queries to only connected platforms
+                state["decomposed_queries"] = [
+                    q for q in state.get("decomposed_queries", [])
+                    if q.get("platform") in connected_set
+                ]
+                state["working_memory"]["skipped_platforms"] = missing_platforms
+                logger.info(
+                    "Filtered out unconnected platforms",
+                    skipped=missing_platforms,
+                    generating_for=list(connected_set & set(platforms)),
                 )
 
             execution_time = int((time.time() - start_time) * 1000)
@@ -172,8 +172,8 @@ class DataCheckerNode:
 
         return list(set(platforms))
 
-    async def _check_platform_data(self, user_id: str, platform: str) -> bool:
-        """Check if user has an active connection in connected_social_platform table."""
+    async def _get_connected_platforms(self, user_id: str) -> set[str]:
+        """Fetch all active connected platforms for a user in one query."""
         from sqlalchemy import select
 
         from app.core.database import get_db_context
@@ -182,19 +182,17 @@ class DataCheckerNode:
         try:
             async with get_db_context() as db:
                 stmt = (
-                    select(ConnectedSocialPlatform.id)
+                    select(ConnectedSocialPlatform.platform)
                     .where(
                         ConnectedSocialPlatform.user_id == user_id,
-                        ConnectedSocialPlatform.platform == platform,
                         ConnectedSocialPlatform.status == "active",
                     )
-                    .limit(1)
                 )
                 result = await db.execute(stmt)
-                return result.scalar_one_or_none() is not None
+                return {row[0] for row in result.all()}
         except Exception as e:
-            logger.warning(f"Error checking connected platform: {e}")
-            return False
+            logger.warning(f"Error fetching connected platforms: {e}")
+            return set()
 
 
 # Create node instance

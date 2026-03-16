@@ -158,7 +158,18 @@ class MultiPlatformOrchestratorNode:
 
             # Build final response
             elf_type = state.get("selected_elf_type") or "social_media"
-            state["final_response"] = self._build_response(artifacts, queries, elf_type)
+            response = self._build_response(artifacts, queries, elf_type)
+
+            # Append note about skipped unconnected platforms
+            skipped = (state.get("working_memory") or {}).get("skipped_platforms", [])
+            if skipped:
+                names = ", ".join(p.title() for p in skipped)
+                response += (
+                    f"\n\n> {names} was skipped because it's not connected. "
+                    "Connect at https://www.elvz.ai/elves/social-media-manager"
+                )
+
+            state["final_response"] = response
             state["suggestions"] = self._get_suggestions(artifacts, elf_type)
 
             execution_time = int((time.time() - start_time) * 1000)
