@@ -73,3 +73,21 @@ class GenerateImageResponse(BaseModel):
     image_url: str
     artifact_id: str
     credits_used: int = 5
+
+
+class RegenerateImageRequest(BaseModel):
+    """Request to regenerate an artifact image with improvement instructions."""
+
+    prompt: str = Field(
+        ...,
+        min_length=3,
+        max_length=2000,
+        description="Improvement instructions for the current image",
+    )
+
+
+class RegenerateImageResponse(BaseModel):
+    """Response from the image regeneration endpoint."""
+
+    image_url: str
+    artifact_id: str
