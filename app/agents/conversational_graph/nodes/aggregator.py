@@ -171,14 +171,97 @@ class StreamAggregatorNode:
         if profile.get("brand_voice_context"):
             brand_voice_section = f"\n\nUser's brand voice:\n{profile['brand_voice_context']}"
 
-        system_prompt = (
+        # Select system prompt based on elf type
+        selected_elf = state.get("selected_elf_type")
+
+        elf_prompts = {
+            "seo": (
+                "You are Elvz, an AI assistant specializing in SEO optimization, "
+                "keyword research, technical audits, and search engine rankings. "
+                "You have full access to the current conversation history in the "
+                "messages below — use it to recall what was discussed and maintain continuity.\n\n"
+                "Answer the user's SEO questions helpfully and concisely.\n\n"
+                "IMPORTANT: You must NEVER perform full SEO audits or generate complete reports "
+                "in your response. Audits and analysis are handled by a separate specialized pipeline. "
+                "If the user wants an audit or analysis, tell them to ask you to 'audit' or "
+                "'analyze' so the SEO pipeline handles it properly."
+            ),
+            "copywriter": (
+                "You are Elvz, an AI assistant specializing in content writing, "
+                "blog posts, ad copy, and product descriptions. "
+                "You have full access to the current conversation history in the "
+                "messages below — use it to recall what was discussed and maintain continuity.\n\n"
+                "Answer the user's copywriting questions helpfully and concisely.\n\n"
+                "IMPORTANT: You must NEVER write full blog posts, ad copy, or product descriptions "
+                "in your response. Content generation is handled by a separate specialized pipeline. "
+                "If the user wants content created, tell them to ask you to 'write' or "
+                "'create' so the content pipeline handles it properly."
+            ),
+            "assistant": (
+                "You are Elvz, a general AI assistant that helps with tasks, "
+                "email drafting, research, meeting notes, and document creation. "
+                "You have full access to the current conversation history in the "
+                "messages below — use it to recall what was discussed and maintain continuity.\n\n"
+                "Answer the user's questions helpfully and concisely."
+            ),
+        }
+
+        system_prompt = elf_prompts.get(
+            selected_elf or "social_media",
+            # Default: social media prompt
             "You are Elvz, an AI assistant specializing in social media content strategy "
             "and creation. You have full access to the current conversation history in the "
             "messages below — use it to recall what was discussed and maintain continuity.\n\n"
-            "Answer the user's question helpfully and concisely. "
-            "If the user seems to want content created, suggest they ask you to generate it."
-            + brand_voice_section
-        )
+            "Answer the user's question helpfully and concisely.\n\n"
+            "IMPORTANT: You must NEVER write or generate full social media posts, captions, "
+            "or drafts in your response. Content generation is handled by a separate "
+            "specialized pipeline with optimization, hashtags, and style matching. "
+            "If the user wants content created, tell them to ask you to 'create' or "
+            "'generate' a post so the content pipeline handles it properly."
+        ) + brand_voice_section
+
+        # Inject blocked context if user was recently blocked from generating
+        blocked = (state.get("working_memory") or {}).get("last_blocked")
+        if blocked:
+            # Verify the block is still valid — user may have connected since
+            from sqlalchemy import select
+
+            from app.core.database import get_db_context
+            from app.models.connected_social_platform import ConnectedSocialPlatform
+
+            user_id = state.get("user_id", "")
+            blocked_platforms = blocked.get("platforms") or []
+
+            try:
+                async with get_db_context() as db:
+                    stmt = (
+                        select(ConnectedSocialPlatform.id)
+                        .where(
+                            ConnectedSocialPlatform.user_id == user_id,
+                            ConnectedSocialPlatform.platform.in_(blocked_platforms),
+                            ConnectedSocialPlatform.status == "active",
+                        )
+                        .limit(1)
+                    )
+                    result = await db.execute(stmt)
+                    if result.scalar_one_or_none() is not None:
+                        blocked = None
+                        state["working_memory"]["last_blocked"] = None
+                        logger.info(
+                            "Cleared stale last_blocked — user now has active connection",
+                            user_id=user_id,
+                        )
+            except Exception as e:
+                logger.warning("Failed to validate last_blocked", error=str(e))
+
+            if blocked:
+                platform_names = ", ".join(p.title() for p in blocked_platforms)
+                system_prompt += (
+                    f"\n\nCRITICAL: The user has NOT connected their {platform_names} "
+                    "social media account. They were blocked from generating content. "
+                    "Do NOT generate any posts. Remind them to connect their social media "
+                    "account at https://www.elvz.ai/elves/social-media-manager first."
+                )
 
         # Build messages with conversation history
         messages = [LLMMessage(role="system", content=system_prompt)]

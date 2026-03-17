@@ -3,7 +3,7 @@ Social media tools for content optimization.
 Tools for hashtags, analytics, trending topics, and platform-specific data.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -216,7 +216,7 @@ class TrendingTopicsTool(BaseTool[TrendingTopicsInput, TrendingTopicsOutput]):
         return TrendingTopicsOutput(
             topics=topics,
             platform=input_data.platform,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
 
 

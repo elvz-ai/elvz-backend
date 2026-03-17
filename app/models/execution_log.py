@@ -1,13 +1,17 @@
 """Execution monitoring models for storing graph execution logs."""
 
-from sqlalchemy import Column, String, Integer, DateTime, Text, Enum, ForeignKey, JSON, Index
-from sqlalchemy.orm import relationship
-from app.core.database import Base
 from datetime import datetime
-import enum
+from enum import Enum
+from typing import Optional
+
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.database import Base
 
 
-class ExecutionStatus(str, enum.Enum):
+class ExecutionStatus(str, Enum):
     """Status of overall execution."""
     RUNNING = "running"
     COMPLETED = "completed"
@@ -22,31 +26,39 @@ class ExecutionLog(Base):
     """
     __tablename__ = "execution_logs"
 
-    id = Column(String(36), primary_key=True)
-    conversation_id = Column(String(36), ForeignKey("conversations.id"), nullable=False, index=True)
-    user_id = Column(String(255), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), index=True
+    )
+    user_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("user.id", ondelete="SET NULL"), index=True
+    )
 
     # Request/Response
-    request_message = Column(Text, nullable=False)  # User input
-    response_message = Column(Text)  # Final response to user
+    request_message: Mapped[str] = mapped_column(Text, nullable=False)
+    response_message: Mapped[Optional[str]] = mapped_column(Text)
 
-    # Status
-    status = Column(Enum(ExecutionStatus), default=ExecutionStatus.RUNNING, index=True)
+    # Status — plain string, not PG enum (Next.js uses text())
+    status: Mapped[Optional[str]] = mapped_column(
+        String(50), default=ExecutionStatus.RUNNING.value
+    )
 
     # Timing
-    started_at = Column(DateTime, nullable=False, index=True, default=datetime.utcnow)
-    completed_at = Column(DateTime)
-    total_duration_ms = Column(Integer)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    total_duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
 
     # Execution details - stores all node executions as JSON
-    execution_trace = Column(JSON)  # Full trace from state["execution_trace"]
+    execution_trace: Mapped[Optional[dict]] = mapped_column(JSONB)
 
     # Node outputs - stores key outputs from each node for debugging
-    node_outputs = Column(JSON)  # {node_name: {output_summary, elapsed_ms}}
+    node_outputs: Mapped[Optional[dict]] = mapped_column(JSONB)
 
     # Error tracking
-    error_summary = Column(Text)  # Summary of errors if failed
-    failed_nodes = Column(JSON)  # List of node names that failed
+    error_summary: Mapped[Optional[str]] = mapped_column(Text)
+    failed_nodes: Mapped[Optional[dict]] = mapped_column(JSONB)
 
     # Indexes for common queries
     __table_args__ = (

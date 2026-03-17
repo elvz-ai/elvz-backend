@@ -4,7 +4,7 @@ Uses Grok for fast, combined optimization in a single LLM call.
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import structlog
@@ -130,12 +130,12 @@ class OptimizationAgent:
             content_output = state.get("content_output", {})
             target_audience = content_output.get("target_audience")
         
-        timezone = context.get("timezone", "UTC")
-        
+        user_timezone = context.get("timezone", "UTC")
+
         logger.info(
             "Optimization agent executing",
             platform=platform,
-            timezone=timezone,
+            timezone=user_timezone,
         )
         
         # Get platform-specific info
@@ -151,17 +151,17 @@ class OptimizationAgent:
             platform=platform,
             topic=topic,
             target_audience=target_audience,
-            timezone=timezone,
+            user_timezone=user_timezone,
             hashtag_limit=hashtag_limit,
             best_times=best_times,
             hashtag_strategy=hashtag_strategy,
         )
-        
+
         # Build timing options from LLM result
         timing = self._build_timing_options(
             optimization.get("best_hour", best_times["best_hour"]),
             optimization.get("best_days", best_times["best_days"]),
-            timezone,
+            user_timezone,
             platform,
         )
         
@@ -175,16 +175,16 @@ class OptimizationAgent:
         platform: str,
         topic: str,
         target_audience: str,
-        timezone: str,
+        user_timezone: str,
         hashtag_limit: int,
         best_times: dict,
         hashtag_strategy: dict,
     ) -> dict:
         """Generate optimization using Grok."""
-        
+
         hashtag_strategy = hashtag_strategy or {}
-        
-        current_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+        current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         # Prepare prompt inputs
         # If target_audience not provided (parallel execution), let LLM infer it
         target_audience_ctx = target_audience or "Infer based on topic and platform"
@@ -194,7 +194,7 @@ class OptimizationAgent:
             topic=topic,
             target_audience=target_audience_ctx,
             current_time=current_time,
-            timezone=timezone,
+            timezone=user_timezone,
             hashtag_limit=hashtag_limit,
             best_times=f"{best_times['best_days']} at {best_times['best_hour']}:00 - {best_times['notes']}",
             focus=hashtag_strategy.get("focus", "discovery"),
@@ -243,12 +243,12 @@ class OptimizationAgent:
         self,
         best_hour: int,
         best_days: list[str],
-        timezone: str,
+        user_timezone: str,
         platform: str,
     ) -> dict:
         """Build 3 timing options from LLM result."""
         
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         day_map = {
             "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
             "Friday": 4, "Saturday": 5, "Sunday": 6
@@ -313,6 +313,6 @@ class OptimizationAgent:
                     "day_of_week": optimal_times[1].strftime("%A"),
                 },
             ],
-            "timezone": timezone,
+            "timezone": user_timezone,
             "confidence": 0.85,
         }

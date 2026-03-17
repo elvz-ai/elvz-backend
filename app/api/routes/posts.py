@@ -13,7 +13,7 @@ is built from in-memory data and returned immediately.
 import asyncio
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
@@ -25,7 +25,6 @@ from app.agents.elves.social_media_manager.mini_agents.visual import VisualAgent
 from app.api.deps import get_user_id
 from app.core.database import get_db_context
 from app.models.artifact import Artifact, ArtifactBatch, ArtifactStatus
-from app.models.conversation import Conversation, ConversationStatus
 from app.models.user import User
 from app.schemas.posts import (
     GenerateImageRequest,
@@ -76,7 +75,6 @@ def _build_modification_feedback(tone: str, length: str) -> str:
 
 async def _persist_all(
     user_id: str,
-    conversation_id: str,
     batch_id: str,
     topic: Optional[str],
     platforms: list[str],
@@ -93,45 +91,37 @@ async def _persist_all(
                     id=user_id,
                     email=f"{user_id}@elvz.local",
                     name=user_id,
-                    hashed_password="dev_placeholder",
                 ))
 
-            # 2. Create headless conversation
-            session.add(Conversation(
-                id=conversation_id,
-                user_id=user_id,
-                thread_id=str(uuid.uuid4()),
-                title=(topic or "New Post")[:255],
-                status=ConversationStatus.ACTIVE.value,
-                extra_metadata={"source": "wizard", "platforms": platforms},
-            ))
-
-            # 3. Create batch (already complete)
+            # 2. Create batch (no conversation in wizard flow)
             session.add(ArtifactBatch(
                 id=batch_id,
-                conversation_id=conversation_id,
+                user_id=user_id,
+                conversation_id=None,
                 platforms=platforms,
                 topic=topic,
                 status="complete",
                 execution_strategy="parallel",
                 execution_time_ms=execution_time_ms,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
             ))
 
-            # 4. Create all artifacts
+            # 3. Create all artifacts
             for data in artifacts_data:
                 session.add(Artifact(
                     id=data["id"],
-                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    conversation_id=None,
                     batch_id=batch_id,
                     artifact_type="social_post",
                     platform=data["platform"],
                     content=data["content"],
+                    original_content=data["content"],  # snapshot for brain
                     status=ArtifactStatus.DRAFT.value,
                     generation_metadata=data["metadata"],
                 ))
 
-            # 5. Single COMMIT (get_db_context auto-commits on exit)
+            # 4. Single COMMIT (get_db_context auto-commits on exit)
 
         logger.info(
             "Background persist completed",
@@ -166,7 +156,6 @@ async def generate_post(
     start_time = time.time()
 
     # Generate all IDs upfront — no DB needed
-    conversation_id = str(uuid.uuid4())
     batch_id = str(uuid.uuid4())
 
     logger.info(
@@ -292,7 +281,6 @@ async def generate_post(
     background_tasks.add_task(
         _persist_all,
         user_id=user_id,
-        conversation_id=conversation_id,
         batch_id=batch_id,
         topic=request.idea[:500] if request.idea else None,
         platforms=request.platforms,

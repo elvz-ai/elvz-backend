@@ -4,10 +4,11 @@ Stores generated content from the conversational chatbot.
 """
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -15,6 +16,7 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.conversation import Conversation, Message
+    from app.models.user import User
 
 
 class ArtifactType(str, Enum):
@@ -54,13 +56,11 @@ class ArtifactBatch(Base):
     __tablename__ = "artifact_batches"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    conversation_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
     )
-
-    # Query that generated this batch
-    query_decomposition_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("query_decompositions.id", ondelete="SET NULL")
+    conversation_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), index=True
     )
 
     # Batch metadata
@@ -75,7 +75,7 @@ class ArtifactBatch(Base):
 
     # Performance tracking
     total_tokens_used: Mapped[int] = mapped_column(default=0)
-    total_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    total_cost: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=0)
     execution_time_ms: Mapped[int] = mapped_column(default=0)
 
     # Metadata
@@ -88,7 +88,8 @@ class ArtifactBatch(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Relationships
-    conversation: Mapped["Conversation"] = relationship("Conversation")
+    user: Mapped["User"] = relationship("User")
+    conversation: Mapped[Optional["Conversation"]] = relationship("Conversation")
     artifacts: Mapped[list["Artifact"]] = relationship(
         "Artifact", back_populates="batch", cascade="all, delete-orphan"
     )
@@ -111,6 +112,7 @@ class ArtifactBatch(Base):
             "status": self.status,
             "artifact_count": self.artifact_count,
             "total_tokens_used": self.total_tokens_used,
+            "total_cost": float(self.total_cost) if self.total_cost else 0.0,
             "execution_time_ms": self.execution_time_ms,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
@@ -126,8 +128,11 @@ class Artifact(Base):
     __tablename__ = "artifacts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    conversation_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    conversation_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), index=True
     )
     message_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("messages.id", ondelete="SET NULL")
@@ -159,6 +164,14 @@ class Artifact(Base):
         String(50), default=ArtifactStatus.DRAFT.value, nullable=False
     )
 
+    # Original AI-generated content (set once at creation, never changes)
+    # Used by the brain to compare AI output vs user-edited final version
+    original_content: Mapped[Optional[dict]] = mapped_column(JSONB)
+
+    # Edit history as append-only array of objects, ordered by `at`
+    # [{"diff": {...}, "after_edit": {...}, "source": "user_edit", "at": "..."}, ...]
+    edit_history: Mapped[list] = mapped_column(JSONB, default=list)
+
     # User feedback
     user_rating: Mapped[Optional[int]] = mapped_column()  # 1-5 stars
     user_feedback: Mapped[Optional[str]] = mapped_column(Text)
@@ -187,7 +200,8 @@ class Artifact(Base):
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Relationships
-    conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="artifacts")
+    user: Mapped["User"] = relationship("User")
+    conversation: Mapped[Optional["Conversation"]] = relationship("Conversation", back_populates="artifacts")
     message: Mapped[Optional["Message"]] = relationship("Message")
     batch: Mapped[Optional["ArtifactBatch"]] = relationship("ArtifactBatch", back_populates="artifacts")
 
@@ -210,8 +224,10 @@ class Artifact(Base):
             "artifact_type": self.artifact_type,
             "platform": self.platform,
             "content": self.content,
+            "original_content": self.original_content,
             "status": self.status,
             "user_rating": self.user_rating,
+            "was_edited": self.was_edited,
             "was_published": self.was_published,
             "generation_metadata": self.generation_metadata,
             "created_at": self.created_at.isoformat() if self.created_at else None,

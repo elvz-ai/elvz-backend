@@ -60,7 +60,7 @@ class ContentHistory(Base):
     
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
     )
     
     # Content Classification
@@ -118,7 +118,7 @@ class Task(Base):
     
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
     )
     session_id: Mapped[Optional[str]] = mapped_column(String(36), index=True)
     

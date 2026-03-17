@@ -23,7 +23,7 @@ from app.api.routes.webhooks import router as webhooks_router
 from app.api.websocket import websocket_endpoint
 from app.core.config import settings
 from app.core.cache import cache
-from app.core.database import init_db, close_db
+from app.core.database import close_db
 
 logger = structlog.get_logger(__name__)
 
@@ -43,13 +43,6 @@ async def lifespan(app: FastAPI):
         logger.info("Redis connected")
     except Exception as e:
         logger.warning("Redis connection failed", error=str(e))
-    
-    # Initialize database
-    try:
-        await init_db()
-        logger.info("Database initialized")
-    except Exception as e:
-        logger.warning("Database initialization failed", error=str(e))
     
     # Initialize Sentry for error tracking
     try:
