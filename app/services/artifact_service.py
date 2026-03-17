@@ -555,6 +555,7 @@ class ArtifactService:
         artifact_id: str,
         updates: dict,
         source: str = "user_edit",
+        prompt: Optional[str] = None,
         db: Optional[AsyncSession] = None,
     ) -> Optional[Artifact]:
         """
@@ -564,6 +565,7 @@ class ArtifactService:
             artifact_id: Artifact identifier
             updates: Only the changed fields (e.g. {"text": "...", "hashtags": [...]})
             source: Edit source ("user_edit", "regeneration")
+            prompt: Optional optimization prompt (stored for brain training)
             db: Optional database session
 
         Creates a revision entry with a field-level diff so the brain
@@ -587,13 +589,17 @@ class ArtifactService:
                 return artifact
 
             # Append revision entry (array of objects, no version key)
-            history = list(artifact.edit_history or [])
-            history.append({
+            entry = {
                 "diff": diff,
                 "after_edit": new_content,
                 "source": source,
                 "at": datetime.now(timezone.utc).isoformat(),
-            })
+            }
+            if prompt:
+                entry["prompt"] = prompt
+
+            history = list(artifact.edit_history or [])
+            history.append(entry)
 
             artifact.content = new_content
             artifact.edit_history = history

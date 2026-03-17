@@ -4,12 +4,14 @@ Artifact API routes.
 Endpoints for managing generated artifacts.
 """
 
+import time
 from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.agents.elves.social_media_manager import SocialMediaManagerElf
 from app.api.deps import get_user_id
 from app.services.artifact_service import artifact_service
 
@@ -36,6 +38,14 @@ class ArtifactContentUpdate(BaseModel):
     hashtags: Optional[list[str]] = None
     image_url: Optional[str] = None
     schedule: Optional[dict] = None
+
+
+class OptimizeArtifactRequest(BaseModel):
+    """Request for AI re-optimization of an artifact."""
+    prompt: str = Field(..., min_length=3, max_length=2000)
+
+
+_social_media_elf = SocialMediaManagerElf()
 
 
 @router.get("/{artifact_id}")
@@ -172,6 +182,115 @@ async def update_content(
             artifact_id=artifact_id,
         )
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{artifact_id}/optimize")
+async def optimize_artifact(
+    artifact_id: str,
+    request: OptimizeArtifactRequest,
+    user_id: str = Depends(get_user_id),
+) -> dict:
+    """
+    Re-optimize an artifact via AI using a user prompt.
+
+    Calls the SocialMediaManagerElf with the artifact's current content as
+    previous_content and the user's prompt as modification_feedback.
+    The updated content is saved with source="regeneration" in edit_history.
+    """
+    try:
+        artifact = await artifact_service.get_artifact(artifact_id)
+
+        if not artifact:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+        if artifact.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        current_content = artifact.content or {}
+        current_text = current_content.get("text") or current_content.get("post_text") or ""
+
+        start = time.monotonic()
+
+        # Call the Elf with modification fields
+        elf_result = await _social_media_elf.execute(
+            request={
+                "topic": current_text[:100],
+                "platform": artifact.platform or "linkedin",
+                "content_type": "thought_leadership",
+                "message": request.prompt,
+                "previous_content": current_text,
+                "modification_feedback": request.prompt,
+            },
+            context={
+                "user_id": user_id,
+                "image": "false",
+                "video": "false",
+            },
+        )
+
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+
+        # Extract optimized content from Elf response
+        updates = _extract_content(elf_result)
+        if not updates.get("text"):
+            raise HTTPException(
+                status_code=500,
+                detail="Optimization produced no content",
+            )
+
+        # Persist with source="regeneration" so the brain can distinguish
+        updated_artifact = await artifact_service.update_artifact_content(
+            artifact_id=artifact_id,
+            updates=updates,
+            source="regeneration",
+            prompt=request.prompt,
+        )
+
+        result = updated_artifact.to_dict()
+        result["optimization_time_ms"] = elapsed_ms
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Failed to optimize artifact",
+            error=str(e),
+            artifact_id=artifact_id,
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _extract_content(result: dict) -> dict:
+    """Extract normalized content fields from a SocialMediaManagerElf response."""
+    variations = result.get("post_variations") or []
+    if variations:
+        variation = variations[0]
+        raw = variation.get("content") or {}
+        return {
+            "text": raw.get("post_text") or raw.get("text") or "",
+            "hook": raw.get("hook") or "",
+            "cta": raw.get("cta") or "",
+            "hashtags": [
+                h.get("tag", h) if isinstance(h, dict) else h
+                for h in variation.get("hashtags") or []
+            ],
+            "schedule": variation.get("posting_schedule") or {},
+        }
+
+    # Fallback: direct keys at result root
+    content = {}
+    if "content" in result:
+        content.update(result["content"])
+    elif "final_output" in result:
+        output = result["final_output"]
+        if isinstance(output, dict):
+            content.update(output)
+
+    content.setdefault("text", result.get("post_text") or "")
+    content.setdefault("hashtags", result.get("hashtags") or [])
+    content.setdefault("schedule", result.get("timing") or {})
+    return content
 
 
 @router.get("/batch/{batch_id}")
