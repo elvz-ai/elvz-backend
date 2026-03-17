@@ -5,7 +5,7 @@ All tools should inherit from BaseTool.
 
 import asyncio
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Generic, Optional, TypeVar
 
 import structlog
@@ -26,7 +26,7 @@ class ToolResult(BaseModel):
     error: Optional[str] = None
     cached: bool = False
     execution_time_ms: int = 0
-    timestamp: datetime = datetime.utcnow()
+    timestamp: datetime = datetime.now(timezone.utc)
 
 
 class BaseTool(ABC, Generic[InputT, OutputT]):
@@ -95,7 +95,7 @@ class BaseTool(ABC, Generic[InputT, OutputT]):
         Returns:
             ToolResult with success/failure status and data
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             # Validate input
@@ -129,7 +129,7 @@ class BaseTool(ABC, Generic[InputT, OutputT]):
                     result.model_dump() if isinstance(result, BaseModel) else result,
                 )
             
-            execution_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            execution_time = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
             
             return ToolResult(
                 success=True,
@@ -147,7 +147,7 @@ class BaseTool(ABC, Generic[InputT, OutputT]):
             
         except Exception as e:
             logger.error("Tool execution failed", tool=self.name, error=str(e))
-            execution_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            execution_time = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
             return ToolResult(
                 success=False,
                 error=str(e),

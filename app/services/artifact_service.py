@@ -5,7 +5,7 @@ CRUD operations and business logic for generated artifacts.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
@@ -17,8 +17,8 @@ from app.models.artifact import (
     Artifact,
     ArtifactBatch,
     ArtifactStatus,
-    ArtifactType,
 )
+from app.models.user import User
 
 logger = structlog.get_logger(__name__)
 
@@ -34,10 +34,11 @@ class ArtifactService:
 
     async def create_artifact(
         self,
-        conversation_id: str,
+        user_id: str,
         artifact_type: str,
         platform: str,
         content: dict,
+        conversation_id: Optional[str] = None,
         message_id: Optional[str] = None,
         batch_id: Optional[str] = None,
         generation_metadata: Optional[dict] = None,
@@ -47,10 +48,11 @@ class ArtifactService:
         Create a new artifact.
 
         Args:
-            conversation_id: Conversation identifier
+            user_id: User identifier (required)
             artifact_type: Type of artifact
             platform: Target platform
             content: Artifact content
+            conversation_id: Optional conversation identifier
             message_id: Optional message ID
             batch_id: Optional batch ID
             generation_metadata: Generation metadata
@@ -64,6 +66,7 @@ class ArtifactService:
         async def _create(session: AsyncSession) -> Artifact:
             artifact = Artifact(
                 id=artifact_id,
+                user_id=user_id,
                 conversation_id=conversation_id,
                 message_id=message_id,
                 batch_id=batch_id,
@@ -261,7 +264,7 @@ class ArtifactService:
 
             artifact.status = ArtifactStatus.PUBLISHED.value
             artifact.was_published = True
-            artifact.published_at = datetime.utcnow()
+            artifact.published_at = datetime.now(timezone.utc)
 
             await session.commit()
             await session.refresh(artifact)
@@ -481,7 +484,7 @@ class ArtifactService:
                 return None
 
             batch.status = "complete"
-            batch.completed_at = datetime.utcnow()
+            batch.completed_at = datetime.now(timezone.utc)
             batch.total_tokens_used = total_tokens
             batch.total_cost = total_cost
             batch.execution_time_ms = execution_time_ms
@@ -495,6 +498,135 @@ class ArtifactService:
 
         async with get_db_context() as session:
             return await _update(session)
+
+    # ==================== Wizard Operations ====================
+
+    async def create_wizard_batch(
+        self,
+        user_id: str,
+        platforms: list[str],
+        topic: Optional[str] = None,
+    ) -> dict:
+        """
+        Create an artifact batch for the wizard flow (no conversation).
+
+        Args:
+            user_id: User identifier
+            platforms: Target platforms
+            topic: Content topic/idea
+
+        Returns:
+            Dict with batch_id
+        """
+        batch_id = str(uuid.uuid4())
+
+        async with get_db_context() as session:
+            # Ensure user exists (creates placeholder in dev when auth is bypassed)
+            result = await session.execute(select(User).where(User.id == user_id))
+            if result.scalar_one_or_none() is None:
+                session.add(User(
+                    id=user_id,
+                    email=f"{user_id}@elvz.local",
+                    name=user_id,
+                ))
+                await session.flush()
+
+            # Create batch (no conversation in wizard flow)
+            batch = ArtifactBatch(
+                id=batch_id,
+                user_id=user_id,
+                conversation_id=None,
+                platforms=platforms,
+                topic=topic,
+                status="in_progress",
+                execution_strategy="parallel",
+            )
+            session.add(batch)
+
+            await session.commit()
+
+            return {
+                "batch_id": batch_id,
+            }
+
+
+    async def update_artifact_content(
+        self,
+        artifact_id: str,
+        updates: dict,
+        source: str = "user_edit",
+        prompt: Optional[str] = None,
+        db: Optional[AsyncSession] = None,
+    ) -> Optional[Artifact]:
+        """
+        Merge partial updates into artifact content and record the edit.
+
+        Args:
+            artifact_id: Artifact identifier
+            updates: Only the changed fields (e.g. {"text": "...", "hashtags": [...]})
+            source: Edit source ("user_edit", "regeneration")
+            prompt: Optional optimization prompt (stored for brain training)
+            db: Optional database session
+
+        Creates a revision entry with a field-level diff so the brain
+        can learn from user editing patterns.
+        """
+        async def _update(session: AsyncSession) -> Optional[Artifact]:
+            artifact = await self.get_artifact(artifact_id, session)
+            if not artifact:
+                return None
+
+            old_content = artifact.content or {}
+
+            # Merge updates into existing content (unchanged fields preserved)
+            new_content = {**old_content, **updates}
+
+            # Compute diff only on the fields that were sent
+            diff = _compute_content_diff(old_content, new_content)
+
+            if not diff:
+                # No actual changes — return as-is
+                return artifact
+
+            # Append revision entry (array of objects, no version key)
+            entry = {
+                "diff": diff,
+                "after_edit": new_content,
+                "source": source,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+            if prompt:
+                entry["prompt"] = prompt
+
+            history = list(artifact.edit_history or [])
+            history.append(entry)
+
+            artifact.content = new_content
+            artifact.edit_history = history
+            artifact.was_edited = True
+
+            await session.commit()
+            await session.refresh(artifact)
+            return artifact
+
+        if db:
+            return await _update(db)
+        async with get_db_context() as session:
+            return await _update(session)
+
+
+def _compute_content_diff(old: dict, new: dict) -> dict:
+    """Compute field-level diff between two content dicts."""
+    diff = {"added": {}, "removed": {}, "changed": {}}
+    for key in set(old) | set(new):
+        if key not in old:
+            diff["added"][key] = new[key]
+        elif key not in new:
+            diff["removed"][key] = old[key]
+        elif old[key] != new[key]:
+            diff["changed"][key] = {"old": old[key], "new": new[key]}
+    # Drop empty sections
+    return {k: v for k, v in diff.items() if v}
 
 
 # Global instance

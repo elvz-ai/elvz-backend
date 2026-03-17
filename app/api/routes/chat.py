@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.platform_orchestrator import orchestrator
 from app.api.deps import get_user_id
+from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
 
@@ -21,8 +22,8 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
     session_id: Optional[str] = None
     context: Optional[dict] = None
-    image: bool = Field(default=False, description="Whether to generate image content")
-    video: bool = Field(default=False, description="Whether to generate video content")
+    image: Optional[str] = Field(default="auto", description="Image generation: 'auto' (LLM decides), 'true' (always), 'false' (never)")
+    video: Optional[str] = Field(default="auto", description="Video generation: 'auto' (LLM decides), 'true' (always), 'false' (never)")
 
     class Config:
         json_schema_extra = {
@@ -30,8 +31,8 @@ class ChatRequest(BaseModel):
                 "message": "Create a LinkedIn post about AI in healthcare",
                 "session_id": "abc123",
                 "context": {"brand_name": "HealthTech Co"},
-                "image": True,
-                "video": False
+                "image": "auto",
+                "video": "false"
             }
         }
 
@@ -70,11 +71,12 @@ async def chat(
     
     try:
         from app.agents.platform_orchestrator.orchestrator import ChatRequest as OrchestratorRequest
+        from app.core.config import resolve_generation_flag
 
-        # Merge image/video flags into context
+        # Merge resolved image/video flags into context
         context = request.context or {}
-        context["image"] = request.image
-        context["video"] = request.video
+        context["image"] = resolve_generation_flag(settings.enable_visual_generation, request.image)
+        context["video"] = resolve_generation_flag(settings.enable_video_generation, request.video)
 
         result = await orchestrator.chat(
             OrchestratorRequest(

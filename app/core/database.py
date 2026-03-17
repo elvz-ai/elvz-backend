@@ -28,7 +28,7 @@ engine = create_async_engine(
     max_overflow=settings.database_max_overflow,
     echo=settings.debug,
     future=True,
-    connect_args={"timeout": 10},
+    connect_args={"timeout": 10, "ssl": "require"},
 )
 
 # Create async session factory
@@ -72,12 +72,6 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
-
-
-async def init_db() -> None:
-    """Initialize database tables."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
 
 async def close_db() -> None:

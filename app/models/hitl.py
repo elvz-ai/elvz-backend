@@ -3,7 +3,7 @@ Human-in-the-Loop (HITL) database models.
 Manages approval workflows and user interactions during generation.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
@@ -15,7 +15,6 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.artifact import Artifact
-    from app.models.conversation import Conversation
 
 
 class HITLRequestType(str, Enum):
@@ -97,7 +96,6 @@ class HITLRequest(Base):
     responder_notes: Mapped[Optional[str]] = mapped_column(Text)  # User's additional notes
 
     # Relationships
-    conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="hitl_requests")
     artifact: Mapped[Optional["Artifact"]] = relationship("Artifact")
 
     # Indexes
@@ -142,14 +140,14 @@ class HITLRequest(Base):
     def approve(self, notes: Optional[str] = None) -> None:
         """Approve the HITL request."""
         self.status = HITLStatus.APPROVED.value
-        self.responded_at = datetime.utcnow()
+        self.responded_at = datetime.now(timezone.utc)
         if notes:
             self.responder_notes = notes
 
     def reject(self, notes: Optional[str] = None) -> None:
         """Reject the HITL request."""
         self.status = HITLStatus.REJECTED.value
-        self.responded_at = datetime.utcnow()
+        self.responded_at = datetime.now(timezone.utc)
         if notes:
             self.responder_notes = notes
 
@@ -158,6 +156,6 @@ class HITLRequest(Base):
         self.response = response
         self.selected_options = selected_options
         self.status = HITLStatus.APPROVED.value
-        self.responded_at = datetime.utcnow()
+        self.responded_at = datetime.now(timezone.utc)
         if notes:
             self.responder_notes = notes

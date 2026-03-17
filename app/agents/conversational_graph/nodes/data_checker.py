@@ -1,9 +1,9 @@
 """
 Data Checker Node.
 
-Verifies that required user data is available in the social_memory_test
-Qdrant collection for content generation. Blocks artifact generation
-when the user has not connected their social media.
+Verifies that the user has an active social media connection by querying
+the connected_social_platform table. Blocks artifact generation when the
+user has not connected (or has disconnected / token expired).
 """
 
 import time
@@ -21,11 +21,12 @@ logger = structlog.get_logger(__name__)
 
 class DataCheckerNode:
     """
-    Checks availability of user data in the social_memory_test collection.
+    Checks the connected_social_platform table for active connections.
 
-    When ALL requested platforms have no data, sets social_not_connected=True
-    and writes a final_response telling the user to connect their social media.
-    The graph's conditional edge then skips artifact generation.
+    When ALL requested platforms lack an active connection, sets
+    social_not_connected=True and writes a final_response telling the user
+    to connect their social media.  The graph's conditional edge then skips
+    artifact generation.
     """
 
     async def __call__(self, state: ConversationState) -> ConversationState:
@@ -35,17 +36,30 @@ class DataCheckerNode:
         add_stream_event(state, "node_started", node="data_checker")
 
         try:
+            # Non-social elvz don't need social media connections
+            selected_elf = state.get("selected_elf_type")
+            if selected_elf and selected_elf != "social_media":
+                state["data_available"] = {}
+                state["missing_data_platforms"] = []
+                state["social_not_connected"] = False
+
+                execution_time = int((time.time() - start_time) * 1000)
+                add_execution_trace(
+                    state, "data_checker", "completed", execution_time,
+                    metadata={"skipped": True, "reason": f"elf_type={selected_elf}"},
+                )
+                add_stream_event(state, "node_completed", node="data_checker")
+                logger.info("Data check skipped for non-social elf", elf_type=selected_elf)
+                return state
+
             user_id = state["user_id"]
             platforms = self._get_platforms(state)
 
-            data_available = {}
-            missing_platforms = []
+            # Single query: fetch all active connected platforms for this user
+            connected_set = await self._get_connected_platforms(user_id)
 
-            for platform in platforms:
-                has_data = await self._check_platform_data(user_id, platform)
-                data_available[platform] = has_data
-                if not has_data:
-                    missing_platforms.append(platform)
+            data_available = {p: (p in connected_set) for p in platforms}
+            missing_platforms = [p for p in platforms if p not in connected_set]
 
             state["data_available"] = data_available
             state["missing_data_platforms"] = missing_platforms
@@ -59,8 +73,8 @@ class DataCheckerNode:
             state["working_memory"]["has_user_profile"] = has_profile
             state["working_memory"]["has_brand_voice"] = has_brand_voice
 
-            if missing_platforms and len(missing_platforms) == len(platforms):
-                # No social media data at all — user hasn't connected
+            if len(missing_platforms) == len(platforms):
+                # No requested platforms are connected — block entirely
                 state["social_not_connected"] = True
                 platform_names = ", ".join(p.title() for p in missing_platforms)
                 state["final_response"] = (
@@ -68,18 +82,30 @@ class DataCheckerNode:
                     "Please connect your social media account at "
                     "https://www.elvz.ai/elves/social-media-manager to get started."
                 )
+                state["working_memory"]["last_blocked"] = {
+                    "reason": "social_not_connected",
+                    "platforms": missing_platforms,
+                }
                 logger.info(
                     "Social media not connected — blocking artifact generation",
                     user_id=user_id,
                     missing=missing_platforms,
                 )
-            elif missing_platforms:
-                # Some platforms connected, some not — proceed with note
-                state["working_memory"]["reduced_personalization"] = True
-                connected = [p for p in platforms if p not in missing_platforms]
-                state["working_memory"]["personalization_note"] = (
-                    f"Note: Limited personalization for {', '.join(missing_platforms)}. "
-                    f"Data available for: {', '.join(connected)}."
+            else:
+                # At least some platforms connected — clear any prior blocked state
+                state["working_memory"]["last_blocked"] = None
+
+            if missing_platforms and len(missing_platforms) < len(platforms):
+                # Filter decomposed_queries to only connected platforms
+                state["decomposed_queries"] = [
+                    q for q in state.get("decomposed_queries", [])
+                    if q.get("platform") in connected_set
+                ]
+                state["working_memory"]["skipped_platforms"] = missing_platforms
+                logger.info(
+                    "Filtered out unconnected platforms",
+                    skipped=missing_platforms,
+                    generating_for=list(connected_set & set(platforms)),
                 )
 
             execution_time = int((time.time() - start_time) * 1000)
@@ -146,17 +172,27 @@ class DataCheckerNode:
 
         return list(set(platforms))
 
-    async def _check_platform_data(self, user_id: str, platform: str) -> bool:
-        """Check if user has scraped social data in social_memory_test collection."""
-        from app.core.vector_store import vector_store
+    async def _get_connected_platforms(self, user_id: str) -> set[str]:
+        """Fetch all active connected platforms for a user in one query."""
+        from sqlalchemy import select
+
+        from app.core.database import get_db_context
+        from app.models.connected_social_platform import ConnectedSocialPlatform
 
         try:
-            return await vector_store.has_social_content(
-                user_id=user_id, platform=platform
-            )
+            async with get_db_context() as db:
+                stmt = (
+                    select(ConnectedSocialPlatform.platform)
+                    .where(
+                        ConnectedSocialPlatform.user_id == user_id,
+                        ConnectedSocialPlatform.status == "active",
+                    )
+                )
+                result = await db.execute(stmt)
+                return {row[0] for row in result.all()}
         except Exception as e:
-            logger.warning(f"Error checking social content: {e}")
-            return False
+            logger.warning(f"Error fetching connected platforms: {e}")
+            return set()
 
 
 # Create node instance

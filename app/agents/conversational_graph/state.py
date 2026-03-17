@@ -5,7 +5,7 @@ Defines the TypedDict that flows through all nodes in the
 conversational graph, maintaining context across turns.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage
@@ -127,6 +127,12 @@ class ConversationState(TypedDict, total=False):
     final_response: Optional[str]
     suggestions: list[str]
 
+    # ==================== Elf Routing ====================
+    selected_elf_type: Optional[str]  # ElfType value when explicitly routed, None for auto-detect
+
+    # ==================== Request Context ====================
+    request_context: dict  # Per-request flags (image, video) from API caller
+
     # ==================== Execution Metadata ====================
     execution_trace: list[dict]  # [{node, status, time_ms, error}]
     errors: list[str]
@@ -140,6 +146,7 @@ def create_initial_state(
     user_id: str,
     thread_id: str,
     user_input: str,
+    request_context: dict | None = None,
 ) -> ConversationState:
     """
     Create initial state for a new conversation turn.
@@ -149,6 +156,7 @@ def create_initial_state(
         user_id: User identifier
         thread_id: LangGraph thread identifier
         user_input: User's message
+        request_context: Per-request flags (image, video) from API caller
 
     Returns:
         Initial conversation state
@@ -221,12 +229,18 @@ def create_initial_state(
         final_response=None,
         suggestions=[],
 
+        # Elf routing
+        selected_elf_type=(request_context or {}).get("elf_type"),
+
+        # Request context
+        request_context=request_context or {},
+
         # Execution
         execution_trace=[],
         errors=[],
         total_tokens_used=0,
         total_cost=0.0,
-        execution_start_time=datetime.utcnow(),
+        execution_start_time=datetime.now(timezone.utc),
     )
 
 
@@ -253,7 +267,7 @@ def add_execution_trace(
         "node": node,
         "status": status,
         "time_ms": time_ms,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     if error:
@@ -286,7 +300,7 @@ def add_stream_event(
         type=event_type,
         node=node or state.get("current_node", "unknown"),
         content=content,
-        timestamp=datetime.utcnow().isoformat(),
+        timestamp=datetime.now(timezone.utc).isoformat(),
         metadata=metadata or {},
     )
 

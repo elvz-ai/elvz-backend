@@ -193,10 +193,10 @@ async def generate_calendar(
     )
     
     # TODO: Implement full calendar generation
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     
     calendar = []
-    current_date = datetime.utcnow()
+    current_date = datetime.now(timezone.utc)
     
     for week in range(request.duration_weeks):
         week_posts = []

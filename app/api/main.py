@@ -18,11 +18,12 @@ from app.api.routes.conversations import router as conversations_router
 from app.api.routes.artifacts import router as artifacts_router
 from app.api.routes.chat_v2 import router as chat_v2_router
 from app.api.routes.monitoring import router as monitoring_router
+from app.api.routes.posts import router as posts_router
 from app.api.routes.webhooks import router as webhooks_router
 from app.api.websocket import websocket_endpoint
 from app.core.config import settings
 from app.core.cache import cache
-from app.core.database import init_db, close_db
+from app.core.database import close_db
 
 logger = structlog.get_logger(__name__)
 
@@ -42,13 +43,6 @@ async def lifespan(app: FastAPI):
         logger.info("Redis connected")
     except Exception as e:
         logger.warning("Redis connection failed", error=str(e))
-    
-    # Initialize database
-    try:
-        await init_db()
-        logger.info("Database initialized")
-    except Exception as e:
-        logger.warning("Database initialization failed", error=str(e))
     
     # Initialize Sentry for error tracking
     try:
@@ -171,6 +165,7 @@ app.include_router(chat_v2_router, prefix=settings.api_v1_prefix)
 app.include_router(conversations_router, prefix=settings.api_v1_prefix)
 app.include_router(artifacts_router, prefix=settings.api_v1_prefix)
 app.include_router(monitoring_router, prefix=settings.api_v1_prefix)
+app.include_router(posts_router, prefix=settings.api_v1_prefix)
 app.include_router(social_media_router, prefix=settings.api_v1_prefix)
 app.include_router(seo_router, prefix=settings.api_v1_prefix)
 app.include_router(copywriter_router, prefix=settings.api_v1_prefix)

@@ -4,7 +4,7 @@ All Elf agents inherit from this base class.
 """
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional, TypeVar
 
 import structlog
@@ -97,12 +97,12 @@ class BaseElf(ABC):
             logger.error("Mini-agent not found", agent=agent_name)
             return state
         
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             result = await agent.execute(state, context)
             
-            execution_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            execution_time = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
             
             # Update execution trace
             if "execution_trace" not in state:

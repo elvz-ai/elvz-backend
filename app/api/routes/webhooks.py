@@ -20,12 +20,14 @@ import httpx
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cache import cache
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.vector_store import VectorDocument, vector_store
+from app.models.user import User
 from app.models.user_style_profile import UserStyleProfile
 from app.services.rag_retriever import rag_retriever
 
@@ -114,9 +116,9 @@ def _verify_api_key(x_api_key: Optional[str]) -> None:
     If elvz_api_key is not set (empty), validation is skipped in development
     but enforced in production.
     """
-    if not settings.elvz_next_api_key:
+    if not settings.elvz_api_key:
         if settings.environment == "production":
-            logger.warning("elvz_next_api_key not configured in production — rejecting request")
+            logger.warning("elvz_api_key not configured in production — rejecting request")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Webhook authentication is not configured on this server",
@@ -130,7 +132,7 @@ def _verify_api_key(x_api_key: Optional[str]) -> None:
         )
 
     if not hmac.compare_digest(
-        settings.elvz_next_api_key.encode(),
+        settings.elvz_api_key.encode(),
         x_api_key.encode(),
     ):
         raise HTTPException(
@@ -199,6 +201,18 @@ async def extraction_complete(
         ]
         style_features = rag_retriever._extract_style_features(post_dicts)
         if style_features:
+            # Ensure user exists (FK to user.id is now enforced)
+            result = await db.execute(
+                select(User).where(User.id == payload.userId)
+            )
+            if result.scalar_one_or_none() is None:
+                db.add(User(
+                    id=payload.userId,
+                    email=f"{payload.userId}@elvz.local",
+                    name=payload.userId,
+                ))
+                await db.flush()
+
             # Upsert into PostgreSQL (durable source of truth)
             existing = await db.get(UserStyleProfile, payload.userId)
             if existing:
@@ -250,7 +264,7 @@ async def _fetch_posts(extraction_job_id: str) -> list[ExtractedPost]:
     and return the list of extracted posts.
     """
     url = f"{settings.elvz_nextjs_base_url}/api/internal/posts"
-    headers = {"x-api-key": settings.elvz_next_api_key}
+    headers = {"x-api-key": settings.elvz_api_key}
     params = {"extractionJobId": extraction_job_id}
 
     logger.debug(

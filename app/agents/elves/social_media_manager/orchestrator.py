@@ -96,7 +96,7 @@ class SocialMediaManagerElf(BaseElf):
         start_time = time.time()
         
         # Extract entities from context
-        entities = context.get("entities", {})
+        entities = context.get("entities") or {}
         
         # Build enriched request
         enriched_request = {
@@ -190,8 +190,8 @@ class SocialMediaManagerElf(BaseElf):
         """Run Planner + ExpertPersona agents in parallel to decide strategy and build expert identity."""
         logger.debug("Running planner agent")
 
-        context = state.get("context", {})
-        request = state.get("user_request", {})
+        context = state.get("context") or {}
+        request = state.get("user_request") or {}
 
         # Run planner and expert persona generation concurrently (zero latency overhead)
         planner_result, expert_persona = await asyncio.gather(
@@ -221,7 +221,7 @@ class SocialMediaManagerElf(BaseElf):
                 "error": str(planner_result),
             })
         else:
-            state["plan"] = planner_result.get("plan", {})
+            state["plan"] = planner_result.get("plan") or {}
             state["execution_trace"].append({
                 "agent": "planner",
                 "status": "completed",
@@ -254,23 +254,31 @@ class SocialMediaManagerElf(BaseElf):
 
         include_hashtags = plan.get("include_hashtags", True)
 
-        # Check if image/video content is requested and allowed by user flags
-        image_requested = context.get("image", False)
-        video_requested = context.get("video", False)
+        # Resolve image/video using three-way flags: "true", "false", "auto"
+        image_mode = context.get("image", "false")
+        video_mode = context.get("video", "false")
 
-        # Include visual only if planner suggests it AND user allows it (image=true)
-        include_visual = plan.get("include_visual", False) and image_requested
+        if image_mode == "true":
+            include_visual = True
+        elif image_mode == "auto":
+            include_visual = plan.get("include_visual", False)  # LLM's decision
+        else:
+            include_visual = False
 
-        # Include video only if planner suggests it AND user allows it (video=true)
-        include_video = plan.get("include_video", False) and video_requested
+        if video_mode == "true":
+            include_video = True
+        elif video_mode == "auto":
+            include_video = plan.get("include_video", False)  # LLM's decision
+        else:
+            include_video = False
 
         logger.debug(
             "Running parallel agents",
             include_hashtags=include_hashtags,
             include_visual=include_visual,
             include_video=include_video,
-            image_requested=image_requested,
-            video_requested=video_requested,
+            image_mode=image_mode,
+            video_mode=video_mode,
         )
 
         # Content agent ALWAYS runs
@@ -363,7 +371,7 @@ class SocialMediaManagerElf(BaseElf):
                 content,
                 hashtags,
                 timing,
-                state.get("user_request", {}).get("platform", "linkedin")
+                (state.get("user_request") or {}).get("platform", "linkedin")
             ),
         )
         
@@ -435,7 +443,7 @@ class SocialMediaManagerElf(BaseElf):
     
     def _build_response(self, state: dict, execution_time_ms: int) -> dict:
         """Build final response from state."""
-        final_output = state.get("final_output", {})
+        final_output = state.get("final_output") or {}
         
         return {
             "post_variations": final_output.get("post_variations", []),

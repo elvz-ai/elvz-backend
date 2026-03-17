@@ -4,15 +4,16 @@ Artifact API routes.
 Endpoints for managing generated artifacts.
 """
 
+import time
 from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.agents.elves.social_media_manager import SocialMediaManagerElf
 from app.api.deps import get_user_id
 from app.services.artifact_service import artifact_service
-from app.services.conversation_service import conversation_service
 
 logger = structlog.get_logger(__name__)
 
@@ -27,6 +28,26 @@ class ArtifactFeedbackRequest(BaseModel):
     was_published: bool = False
 
 
+class ArtifactContentUpdate(BaseModel):
+    """Request for updating editable artifact fields.
+
+    Only send the fields that changed. Omitted fields keep their current values.
+    The server merges updates into the existing content JSONB and tracks the diff.
+    """
+    text: Optional[str] = None
+    hashtags: Optional[list[str]] = None
+    image_url: Optional[str] = None
+    schedule: Optional[dict] = None
+
+
+class OptimizeArtifactRequest(BaseModel):
+    """Request for AI re-optimization of an artifact."""
+    prompt: str = Field(..., min_length=3, max_length=2000)
+
+
+_social_media_elf = SocialMediaManagerElf()
+
+
 @router.get("/{artifact_id}")
 async def get_artifact(
     artifact_id: str,
@@ -34,30 +55,25 @@ async def get_artifact(
 ) -> dict:
     """
     Get artifact details.
-    
+
     Args:
         artifact_id: Artifact identifier
         user_id: Current user ID (from auth)
-    
+
     Returns:
         Artifact details
     """
     try:
         artifact = await artifact_service.get_artifact(artifact_id)
-        
+
         if not artifact:
             raise HTTPException(status_code=404, detail="Artifact not found")
-        
-        # Verify ownership via conversation
-        conversation = await conversation_service.get_conversation(
-            artifact.conversation_id
-        )
-        
-        if not conversation or conversation.user_id != user_id:
+
+        if artifact.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
-        
+
         return artifact.to_dict()
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -73,29 +89,24 @@ async def submit_feedback(
 ) -> dict:
     """
     Submit feedback for an artifact.
-    
+
     Args:
         artifact_id: Artifact identifier
         feedback_request: Feedback data
         user_id: Current user ID (from auth)
-    
+
     Returns:
         Updated artifact
     """
     try:
         artifact = await artifact_service.get_artifact(artifact_id)
-        
+
         if not artifact:
             raise HTTPException(status_code=404, detail="Artifact not found")
-        
-        # Verify ownership
-        conversation = await conversation_service.get_conversation(
-            artifact.conversation_id
-        )
-        
-        if not conversation or conversation.user_id != user_id:
+
+        if artifact.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
-        
+
         # Update artifact with feedback
         updated_artifact = await artifact_service.update_artifact_feedback(
             artifact_id=artifact_id,
@@ -104,9 +115,9 @@ async def submit_feedback(
             was_edited=feedback_request.was_edited,
             was_published=feedback_request.was_published,
         )
-        
+
         return updated_artifact.to_dict()
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -118,6 +129,170 @@ async def submit_feedback(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.put("/{artifact_id}/content")
+async def update_content(
+    artifact_id: str,
+    request: ArtifactContentUpdate,
+    user_id: str = Depends(get_user_id),
+) -> dict:
+    """
+    Update artifact content and track the edit for brain training.
+
+    Send only the fields that changed (text, hashtags, image_url, schedule).
+    Omitted fields keep their current values. The server merges updates into
+    the existing content JSONB, computes a field-level diff, and appends it
+    to edit_history. The original AI-generated content is preserved in
+    original_content.
+
+    Args:
+        artifact_id: Artifact identifier
+        request: Editable fields (text, hashtags, image_url, schedule)
+        user_id: Current user ID (from auth)
+
+    Returns:
+        Updated artifact
+    """
+    try:
+        # Build partial update from only non-None fields
+        updates = {k: v for k, v in request.model_dump().items() if v is not None}
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        artifact = await artifact_service.get_artifact(artifact_id)
+
+        if not artifact:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+        if artifact.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        updated_artifact = await artifact_service.update_artifact_content(
+            artifact_id=artifact_id,
+            updates=updates,
+        )
+
+        return updated_artifact.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Failed to update artifact content",
+            error=str(e),
+            artifact_id=artifact_id,
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{artifact_id}/optimize")
+async def optimize_artifact(
+    artifact_id: str,
+    request: OptimizeArtifactRequest,
+    user_id: str = Depends(get_user_id),
+) -> dict:
+    """
+    Re-optimize an artifact via AI using a user prompt.
+
+    Calls the SocialMediaManagerElf with the artifact's current content as
+    previous_content and the user's prompt as modification_feedback.
+    The updated content is saved with source="regeneration" in edit_history.
+    """
+    try:
+        artifact = await artifact_service.get_artifact(artifact_id)
+
+        if not artifact:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+        if artifact.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        current_content = artifact.content or {}
+        current_text = current_content.get("text") or current_content.get("post_text") or ""
+
+        start = time.monotonic()
+
+        # Call the Elf with modification fields
+        elf_result = await _social_media_elf.execute(
+            request={
+                "topic": current_text[:100],
+                "platform": artifact.platform or "linkedin",
+                "content_type": "thought_leadership",
+                "message": request.prompt,
+                "previous_content": current_text,
+                "modification_feedback": request.prompt,
+            },
+            context={
+                "user_id": user_id,
+                "image": "false",
+                "video": "false",
+            },
+        )
+
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+
+        # Extract optimized content from Elf response
+        updates = _extract_content(elf_result)
+        if not updates.get("text"):
+            raise HTTPException(
+                status_code=500,
+                detail="Optimization produced no content",
+            )
+
+        # Persist with source="regeneration" so the brain can distinguish
+        updated_artifact = await artifact_service.update_artifact_content(
+            artifact_id=artifact_id,
+            updates=updates,
+            source="regeneration",
+            prompt=request.prompt,
+        )
+
+        result = updated_artifact.to_dict()
+        result["optimization_time_ms"] = elapsed_ms
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Failed to optimize artifact",
+            error=str(e),
+            artifact_id=artifact_id,
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _extract_content(result: dict) -> dict:
+    """Extract normalized content fields from a SocialMediaManagerElf response."""
+    variations = result.get("post_variations") or []
+    if variations:
+        variation = variations[0]
+        raw = variation.get("content") or {}
+        return {
+            "text": raw.get("post_text") or raw.get("text") or "",
+            "hook": raw.get("hook") or "",
+            "cta": raw.get("cta") or "",
+            "hashtags": [
+                h.get("tag", h) if isinstance(h, dict) else h
+                for h in variation.get("hashtags") or []
+            ],
+            "schedule": variation.get("posting_schedule") or {},
+        }
+
+    # Fallback: direct keys at result root
+    content = {}
+    if "content" in result:
+        content.update(result["content"])
+    elif "final_output" in result:
+        output = result["final_output"]
+        if isinstance(output, dict):
+            content.update(output)
+
+    content.setdefault("text", result.get("post_text") or "")
+    content.setdefault("hashtags", result.get("hashtags") or [])
+    content.setdefault("schedule", result.get("timing") or {})
+    return content
+
+
 @router.get("/batch/{batch_id}")
 async def get_artifact_batch(
     batch_id: str,
@@ -125,36 +300,31 @@ async def get_artifact_batch(
 ) -> dict:
     """
     Get artifact batch with all artifacts.
-    
+
     Args:
         batch_id: Batch identifier
         user_id: Current user ID (from auth)
-    
+
     Returns:
         Batch details with artifacts
     """
     try:
         batch = await artifact_service.get_batch(batch_id)
-        
+
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found")
-        
-        # Verify ownership
-        conversation = await conversation_service.get_conversation(
-            batch.conversation_id
-        )
-        
-        if not conversation or conversation.user_id != user_id:
+
+        if batch.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
-        
+
         # Get all artifacts in batch
         artifacts = await artifact_service.get_batch_artifacts(batch_id)
-        
+
         return {
             **batch.to_dict(),
             "artifacts": [a.to_dict() for a in artifacts],
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -172,41 +342,35 @@ async def list_conversation_artifacts(
 ) -> dict:
     """
     List artifacts for a conversation.
-    
+
     Args:
         conversation_id: Conversation identifier
         user_id: Current user ID (from auth)
         platform: Filter by platform
         artifact_type: Filter by type
         limit: Max artifacts to return
-    
+
     Returns:
         List of artifacts
     """
     try:
-        # Verify ownership
-        conversation = await conversation_service.get_conversation(conversation_id)
-        
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        
-        if conversation.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
-        
-        # Get artifacts
+        # Get artifacts scoped to this user + conversation
         artifacts = await artifact_service.list_artifacts(
             conversation_id=conversation_id,
             platform=platform,
             artifact_type=artifact_type,
             limit=limit,
         )
-        
+
+        # Filter to only this user's artifacts
+        artifacts = [a for a in artifacts if a.user_id == user_id]
+
         return {
             "conversation_id": conversation_id,
             "artifacts": [a.to_dict() for a in artifacts],
             "total": len(artifacts),
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -225,35 +389,30 @@ async def delete_artifact(
 ) -> dict:
     """
     Delete an artifact.
-    
+
     Args:
         artifact_id: Artifact identifier
         user_id: Current user ID (from auth)
-    
+
     Returns:
         Success message
     """
     try:
         artifact = await artifact_service.get_artifact(artifact_id)
-        
+
         if not artifact:
             raise HTTPException(status_code=404, detail="Artifact not found")
-        
-        # Verify ownership
-        conversation = await conversation_service.get_conversation(
-            artifact.conversation_id
-        )
-        
-        if not conversation or conversation.user_id != user_id:
+
+        if artifact.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
-        
+
         await artifact_service.delete_artifact(artifact_id)
-        
+
         return {
             "message": "Artifact deleted",
             "artifact_id": artifact_id,
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
