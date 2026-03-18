@@ -127,12 +127,14 @@ async def _persist_all(
 
         logger.info(
             "Background persist completed",
+            user_id_saved=user_id,
             batch_id=batch_id,
             artifact_count=len(artifacts_data),
         )
     except Exception as e:
         logger.error(
             "Background persist failed",
+            user_id_saved=user_id,
             batch_id=batch_id,
             error=str(e),
         )
@@ -161,12 +163,15 @@ async def generate_post(
     batch_id = str(uuid.uuid4())
 
     logger.info(
-        "Wizard generate request",
-        user_id=user_id,
-        platforms=request.platforms,
-        tone=request.tone,
-        length=request.length,
-        has_draft=request.draft is not None,
+        "========== POST /posts/generate ==========",
+        user_id_resolved=user_id,
+        request_body={
+            "idea": request.idea[:200] if request.idea else None,
+            "platforms": request.platforms,
+            "tone": request.tone,
+            "length": request.length,
+            "has_draft": request.draft is not None,
+        },
         batch_id=batch_id,
     )
 
@@ -309,10 +314,10 @@ async def generate_image(
     Called from Step 3 of the wizard when user clicks "AI Generate".
     """
     logger.info(
-        "Wizard image generation",
-        user_id=user_id,
+        "========== POST /posts/{artifact_id}/generate-image ==========",
+        user_id_resolved=user_id,
         artifact_id=artifact_id,
-        prompt_length=len(request.prompt),
+        prompt=request.prompt[:200],
     )
 
     # Verify artifact exists
@@ -366,10 +371,10 @@ async def regenerate_image(
     and generates a new image. Tracks the change in edit_history.
     """
     logger.info(
-        "Wizard image regeneration",
-        user_id=user_id,
+        "========== POST /posts/{artifact_id}/regenerate-image ==========",
+        user_id_resolved=user_id,
         artifact_id=artifact_id,
-        prompt_length=len(request.prompt),
+        prompt=request.prompt[:200],
     )
 
     artifact = await artifact_service.get_artifact(artifact_id)
