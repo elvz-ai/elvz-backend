@@ -2,8 +2,6 @@
 FastAPI dependencies for authentication and common operations.
 """
 
-from typing import Optional
-
 from fastapi import Depends, Header, HTTPException, status
 
 from app.core.config import settings
@@ -30,23 +28,13 @@ async def verify_api_key(
 
 
 async def get_user_id(
-    x_user_id: Optional[str] = Header(None, alias="X-User-ID"),
+    x_user_id: str = Header(..., alias="X-User-ID"),
     _: str = Depends(verify_api_key),
 ) -> str:
     """
     Get user ID from X-User-ID header.
 
     Requires a valid X-API-Key (validated via dependency).
-    In development, falls back to 'dev-user-001' if no X-User-ID is provided.
-    In production, X-User-ID is required.
+    X-User-ID is always required — the frontend must send the real user ID.
     """
-    if x_user_id:
-        return x_user_id
-
-    if settings.environment == "development":
-        return "dev-user-001"
-
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="X-User-ID header is required",
-    )
+    return x_user_id

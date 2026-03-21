@@ -32,6 +32,8 @@ from app.schemas.posts import (
     GeneratePostArtifact,
     GeneratePostRequest,
     GeneratePostResponse,
+    RegenerateImageRequest,
+    RegenerateImageResponse,
 )
 from app.services.artifact_service import artifact_service
 
@@ -125,12 +127,14 @@ async def _persist_all(
 
         logger.info(
             "Background persist completed",
+            user_id_saved=user_id,
             batch_id=batch_id,
             artifact_count=len(artifacts_data),
         )
     except Exception as e:
         logger.error(
             "Background persist failed",
+            user_id_saved=user_id,
             batch_id=batch_id,
             error=str(e),
         )
@@ -159,12 +163,15 @@ async def generate_post(
     batch_id = str(uuid.uuid4())
 
     logger.info(
-        "Wizard generate request",
-        user_id=user_id,
-        platforms=request.platforms,
-        tone=request.tone,
-        length=request.length,
-        has_draft=request.draft is not None,
+        "========== POST /posts/generate ==========",
+        user_id_resolved=user_id,
+        request_body={
+            "idea": request.idea[:200] if request.idea else None,
+            "platforms": request.platforms,
+            "tone": request.tone,
+            "length": request.length,
+            "has_draft": request.draft is not None,
+        },
         batch_id=batch_id,
     )
 
@@ -307,10 +314,10 @@ async def generate_image(
     Called from Step 3 of the wizard when user clicks "AI Generate".
     """
     logger.info(
-        "Wizard image generation",
-        user_id=user_id,
+        "========== POST /posts/{artifact_id}/generate-image ==========",
+        user_id_resolved=user_id,
         artifact_id=artifact_id,
-        prompt_length=len(request.prompt),
+        prompt=request.prompt[:200],
     )
 
     # Verify artifact exists
@@ -333,8 +340,12 @@ async def generate_image(
 
     image_url = image_result["url"]
 
-    # Update the artifact's content with the image URL
-    updated_content = {**(artifact.content or {}), "image_url": image_url}
+    # Update the artifact's content with the image URL and prompt
+    updated_content = {
+        **(artifact.content or {}),
+        "image_url": image_url,
+        "image_prompt": request.prompt,
+    }
     await artifact_service.update_artifact(
         artifact_id=artifact_id,
         content=updated_content,
@@ -344,4 +355,69 @@ async def generate_image(
         image_url=image_url,
         artifact_id=artifact_id,
         credits_used=5,
+    )
+
+
+@router.post("/{artifact_id}/regenerate-image", response_model=RegenerateImageResponse)
+async def regenerate_image(
+    artifact_id: str,
+    request: RegenerateImageRequest,
+    user_id: str = Depends(get_user_id),
+) -> RegenerateImageResponse:
+    """
+    Regenerate an artifact's image with improvement instructions.
+
+    Combines the original image prompt with the user's improvement prompt
+    and generates a new image. Tracks the change in edit_history.
+    """
+    logger.info(
+        "========== POST /posts/{artifact_id}/regenerate-image ==========",
+        user_id_resolved=user_id,
+        artifact_id=artifact_id,
+        prompt=request.prompt[:200],
+    )
+
+    artifact = await artifact_service.get_artifact(artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    current_content = artifact.content or {}
+    original_prompt = current_content.get("image_prompt")
+    if not original_prompt:
+        raise HTTPException(
+            status_code=400,
+            detail="No existing image to improve — generate one first",
+        )
+
+    # Combine original prompt with improvement instructions
+    combined_prompt = f"{original_prompt}. Improvement: {request.prompt}"
+
+    image_result = await _visual_agent._generate_image(
+        description=combined_prompt,
+        style="Professional, high-quality social media visual",
+        dimensions="1200 x 630",
+    )
+
+    if not image_result or not image_result.get("url"):
+        raise HTTPException(
+            status_code=500,
+            detail="Image generation failed",
+        )
+
+    image_url = image_result["url"]
+
+    # Update artifact via update_artifact_content to track in edit_history
+    await artifact_service.update_artifact_content(
+        artifact_id=artifact_id,
+        updates={
+            "image_url": image_url,
+            "image_prompt": combined_prompt,
+        },
+        source="image_regeneration",
+        prompt=request.prompt,
+    )
+
+    return RegenerateImageResponse(
+        image_url=image_url,
+        artifact_id=artifact_id,
     )

@@ -246,9 +246,19 @@ async def optimize_artifact(
             prompt=request.prompt,
         )
 
-        result = updated_artifact.to_dict()
-        result["optimization_time_ms"] = elapsed_ms
-        return result
+        # Return same shape as POST /posts/generate
+        return {
+            "batch_id": updated_artifact.batch_id,
+            "artifacts": [
+                {
+                    "id": updated_artifact.id,
+                    "platform": updated_artifact.platform,
+                    "content": updated_artifact.content,
+                    "status": updated_artifact.status,
+                }
+            ],
+            "execution_time_ms": elapsed_ms,
+        }
 
     except HTTPException:
         raise
