@@ -25,9 +25,8 @@ from app.agents.conversational_graph.nodes import (
     multi_platform_orchestrator_node,
     stream_aggregator_node,
     memory_saver_node,
+    artifact_modifier_node,
 )
-from app.agents.conversational_graph.nodes.router import get_route
-from app.agents.conversational_graph.nodes.follow_up import should_generate_follow_up
 
 logger = structlog.get_logger(__name__)
 
@@ -94,6 +93,7 @@ def create_conversational_graph(checkpointer=None) -> StateGraph:
     workflow.add_node("follow_up_generator", follow_up_generator_node)
     workflow.add_node("data_checker", data_checker_node)
     workflow.add_node("multi_platform_orchestrator", multi_platform_orchestrator_node)
+    workflow.add_node("artifact_modifier", artifact_modifier_node)
     workflow.add_node("stream_aggregator", stream_aggregator_node)
 
     # ==================== Set Entry Point ====================
@@ -124,44 +124,43 @@ def create_conversational_graph(checkpointer=None) -> StateGraph:
     workflow.add_edge("context_builder", "router")
 
     # ==================== Router Conditional Edges ====================
+    # ALL intents go through follow_up_detector for HITL context evaluation.
+    # Only guardrail-blocked requests skip to stream_aggregator directly.
     def router_decision(state: ConversationState) -> Literal[
-        "follow_up_detector", "data_checker", "stream_aggregator"
+        "follow_up_detector", "stream_aggregator"
     ]:
-        """Route based on intent and context."""
-        route = state.get("working_memory", {}).get("route", "artifact_generation")
-        needs_data_check = state.get("working_memory", {}).get("needs_data_check", False)
-
-        if route == "qa_response":
-            # Q&A goes directly to aggregator
+        """Route all intents through follow_up_detector for HITL evaluation."""
+        if not state.get("guardrail_passed", True):
             return "stream_aggregator"
-
-        if route == "process_clarification":
-            return "follow_up_detector"
-
-        if route in ["artifact_generation", "modification"]:
-            if needs_data_check:
-                return "data_checker"
-            return "follow_up_detector"
-
-        return "data_checker"
+        return "follow_up_detector"
 
     workflow.add_conditional_edges(
         "router",
         router_decision,
         {
             "follow_up_detector": "follow_up_detector",
-            "data_checker": "data_checker",
             "stream_aggregator": "stream_aggregator",
         },
     )
 
     # ==================== Follow-up Path ====================
+    # After follow_up_detector, route to the correct destination based on
+    # whether follow-up is needed and the original intent route.
     def follow_up_router(state: ConversationState) -> Literal[
-        "follow_up_generator", "data_checker"
+        "follow_up_generator", "data_checker", "stream_aggregator",
+        "multi_platform_orchestrator", "artifact_modifier"
     ]:
-        """Route based on whether follow-up is needed."""
+        """Route based on follow-up need and original intent destination."""
         if state.get("needs_follow_up", False):
             return "follow_up_generator"
+
+        # No follow-up needed — route to original destination
+        route = (state.get("working_memory") or {}).get("route", "artifact_generation")
+        if route == "qa_response":
+            return "stream_aggregator"
+        elif route == "modification":
+            return "artifact_modifier"
+        # artifact_generation, process_clarification, and default
         return "data_checker"
 
     workflow.add_conditional_edges(
@@ -170,6 +169,9 @@ def create_conversational_graph(checkpointer=None) -> StateGraph:
         {
             "follow_up_generator": "follow_up_generator",
             "data_checker": "data_checker",
+            "stream_aggregator": "stream_aggregator",
+            "multi_platform_orchestrator": "multi_platform_orchestrator",
+            "artifact_modifier": "artifact_modifier",
         },
     )
 
@@ -195,8 +197,9 @@ def create_conversational_graph(checkpointer=None) -> StateGraph:
         },
     )
 
-    # ==================== Orchestrator -> Aggregator ====================
+    # ==================== Orchestrator / Modifier -> Aggregator ====================
     workflow.add_edge("multi_platform_orchestrator", "stream_aggregator")
+    workflow.add_edge("artifact_modifier", "stream_aggregator")
 
     # ==================== Final Edges ====================
     # Aggregator -> END (memory_saver runs as background task)
@@ -228,16 +231,8 @@ async def get_conversational_graph(checkpointer=None):
 
     async with _graph_lock:
         if _graph is None:
-            # Get checkpointer if not provided
-            if checkpointer is None:
-                try:
-                    from app.core.checkpointer import get_checkpointer
-                    checkpointer = await get_checkpointer()
-                except Exception as e:
-                    logger.warning(f"Could not initialize checkpointer: {e}")
-                    checkpointer = None
-
-            _graph = create_conversational_graph(checkpointer)
+            # Checkpointer disabled — Redis working_memory handles state persistence
+            _graph = create_conversational_graph(checkpointer=None)
             logger.info("Conversational graph initialized")
 
     return _graph
@@ -516,6 +511,7 @@ async def _persist_artifacts_to_db(state: dict) -> None:
                 id=artifact.get("id"),
                 user_id=user_id,
                 conversation_id=conversation_id,
+                message_id=state.get("current_message_id"),
                 batch_id=batch_id,
                 artifact_type=artifact.get("artifact_type", "social_post"),
                 platform=artifact.get("platform"),

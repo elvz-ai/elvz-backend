@@ -46,6 +46,9 @@ class Conversation(Base):
         String(36), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
     )
 
+    # Which Elf agent this conversation belongs to (frontend slug)
+    elf: Mapped[Optional[str]] = mapped_column(String(50), index=True)
+
     # LangGraph integration
     thread_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False, index=True)
 
@@ -104,6 +107,7 @@ class Conversation(Base):
         return {
             "id": self.id,
             "user_id": self.user_id,
+            "elf": self.elf,
             "thread_id": self.thread_id,
             "title": self.title,
             "status": self.status,

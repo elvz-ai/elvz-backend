@@ -11,7 +11,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.agents.elves.social_media_manager import SocialMediaManagerElf
+from app.agents.elves.social_media_manager.mini_agents.content import ContentAgent
 from app.api.deps import get_user_id
 from app.services.artifact_service import artifact_service
 
@@ -43,9 +43,10 @@ class ArtifactContentUpdate(BaseModel):
 class OptimizeArtifactRequest(BaseModel):
     """Request for AI re-optimization of an artifact."""
     prompt: str = Field(..., min_length=3, max_length=2000)
+    elf: str = Field(..., min_length=1, description="Elf agent slug")
 
 
-_social_media_elf = SocialMediaManagerElf()
+_content_agent = ContentAgent()
 
 
 @router.get("/{artifact_id}")
@@ -193,9 +194,9 @@ async def optimize_artifact(
     """
     Re-optimize an artifact via AI using a user prompt.
 
-    Calls the SocialMediaManagerElf with the artifact's current content as
-    previous_content and the user's prompt as modification_feedback.
-    The updated content is saved with source="regeneration" in edit_history.
+    Calls ContentAgent directly (no planner/persona/optimization) with the
+    artifact's current content as previous_content and the user's prompt
+    as modification_feedback. Saves with source="regeneration" in edit_history.
     """
     try:
         artifact = await artifact_service.get_artifact(artifact_id)
@@ -211,27 +212,34 @@ async def optimize_artifact(
 
         start = time.monotonic()
 
-        # Call the Elf with modification fields
-        elf_result = await _social_media_elf.execute(
-            request={
-                "topic": current_text[:100],
+        # Call ContentAgent directly (skip planner/persona/optimization)
+        agent_state = {
+            "user_request": {
                 "platform": artifact.platform or "linkedin",
+                "topic": current_text[:100],
                 "content_type": "thought_leadership",
-                "message": request.prompt,
-                "previous_content": current_text,
-                "modification_feedback": request.prompt,
+                "goals": ["engagement"],
             },
-            context={
-                "user_id": user_id,
-                "image": "false",
-                "video": "false",
+            "previous_content": current_text,
+            "modification_feedback": request.prompt,
+            "plan": {
+                "content_strategy": f"Modify the existing post based on user instruction: {request.prompt}",
             },
-        )
+        }
+        agent_result = await _content_agent.execute(agent_state, {"user_id": user_id})
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
-        # Extract optimized content from Elf response
-        updates = _extract_content(elf_result)
+        # Extract content from ContentAgent response — may be a string if JSON parsing failed
+        content = agent_result.get("content") or {}
+        if isinstance(content, str):
+            updates = {"text": content, "hook": "", "cta": ""}
+        else:
+            updates = {
+                "text": content.get("post_text") or content.get("text") or "",
+                "hook": content.get("hook") or "",
+                "cta": content.get("cta") or "",
+            }
         if not updates.get("text"):
             raise HTTPException(
                 status_code=500,

@@ -17,6 +17,7 @@ from app.agents.conversational_graph.nodes.follow_up import (
 from app.agents.conversational_graph.nodes.data_checker import data_checker_node
 from app.agents.conversational_graph.nodes.orchestrator import multi_platform_orchestrator_node
 from app.agents.conversational_graph.nodes.aggregator import stream_aggregator_node
+from app.agents.conversational_graph.nodes.artifact_modifier import artifact_modifier_node
 from app.agents.conversational_graph.nodes.saver import memory_saver_node
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "follow_up_generator_node",
     "data_checker_node",
     "multi_platform_orchestrator_node",
+    "artifact_modifier_node",
     "stream_aggregator_node",
     "memory_saver_node",
 ]

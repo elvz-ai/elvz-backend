@@ -31,7 +31,7 @@ class ConversationalChatRequest(BaseModel):
     context: Optional[dict] = None
     image: Optional[str] = Field(default="auto", description="Image generation: 'auto' (LLM decides), 'true' (always), 'false' (never)")
     video: Optional[str] = Field(default="auto", description="Video generation: 'auto' (LLM decides), 'true' (always), 'false' (never)")
-    elf_type: Optional[str] = Field(default=None, description="Explicit elf routing: 'social-media-manager', 'seo-optimizer', 'copy-writer', 'ai-assistant'. When omitted, auto-detected via intent classification.")
+    elf: str = Field(..., min_length=1, description="Elf agent slug: 'social-media-manager', 'seo-optimizer', 'copy-writer'")
 
 
 class ConversationalChatResponse(BaseModel):
@@ -83,6 +83,7 @@ async def conversational_chat(
         conversation = await conversation_service.get_or_create_conversation(
             conversation_id=request.conversation_id,
             user_id=user_id,
+            elf=request.elf,
         )
         conversation_id = conversation.id
         thread_id = conversation.thread_id
@@ -91,8 +92,7 @@ async def conversational_chat(
         graph_config = request.context or {}
         graph_config["image"] = request.image
         graph_config["video"] = request.video
-        if request.elf_type:
-            graph_config["elf_type"] = request.elf_type
+        graph_config["elf_type"] = request.elf
 
         # Invoke conversational graph
         result_state = await invoke_conversation(
@@ -183,6 +183,7 @@ async def conversational_chat_stream(
         conversation = await conversation_service.get_or_create_conversation(
             conversation_id=request.conversation_id,
             user_id=user_id,
+            elf=request.elf,
         )
         conversation_id = conversation.id
         thread_id = conversation.thread_id
@@ -197,8 +198,7 @@ async def conversational_chat_stream(
     stream_config = request.context or {}
     stream_config["image"] = request.image
     stream_config["video"] = request.video
-    if request.elf_type:
-        stream_config["elf_type"] = request.elf_type
+    stream_config["elf_type"] = request.elf
 
     async def sse_generator():
         # Run graph in background, pushing events to event_bus
@@ -232,6 +232,7 @@ async def conversational_chat_stream(
                     "requires_approval", False
                 ),
                 "elf_type": (final_state or {}).get("selected_elf_type"),
+                "follow_up_type": (final_state or {}).get("follow_up_type"),
             }
             yield f"event: done\ndata: {json.dumps(done_data)}\n\n"
 

@@ -36,6 +36,7 @@ class ConversationService:
         user_id: str,
         title: Optional[str] = None,
         metadata: Optional[dict] = None,
+        elf: Optional[str] = None,
         db: Optional[AsyncSession] = None,
     ) -> Conversation:
         """
@@ -60,6 +61,7 @@ class ConversationService:
                 user_id=user_id,
                 thread_id=thread_id,
                 title=title,
+                elf=elf,
                 status=ConversationStatus.ACTIVE.value,
                 extra_metadata=metadata or {},
             )
@@ -126,6 +128,7 @@ class ConversationService:
         self,
         conversation_id: Optional[str],
         user_id: str,
+        elf: Optional[str] = None,
         db: Optional[AsyncSession] = None,
     ) -> Conversation:
         """
@@ -161,6 +164,7 @@ class ConversationService:
                 id=conv_id,
                 user_id=user_id,
                 thread_id=thread_id,
+                elf=elf,
                 status=ConversationStatus.ACTIVE.value,
                 extra_metadata={},
             )

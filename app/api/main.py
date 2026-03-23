@@ -52,13 +52,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Sentry initialization failed", error=str(e))
 
-    # Initialize LangGraph checkpointer
-    try:
-        from app.core.checkpointer import get_checkpointer
-        await get_checkpointer()
-        logger.info("LangGraph checkpointer initialized")
-    except Exception as e:
-        logger.warning("Checkpointer initialization failed", error=str(e))
+    # LangGraph checkpointer disabled — Redis working_memory handles state persistence
 
     # Connect to Qdrant vector store
     try:

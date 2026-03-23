@@ -140,6 +140,8 @@ class MemorySaverNode:
             "artifact_history": state.get("artifact_history", []),
             # Pending modification context (survives across turns for follow-up flow)
             "pending_modification": state.get("pending_modification"),
+            # Pending HITL requirements (survives across turns for clarification resumption)
+            "pending_requirements": (state.get("working_memory") or {}).get("pending_requirements"),
             # Context
             "last_topic": (state.get("working_memory") or {}).get("shared_topic"),
             # Timestamps
@@ -209,12 +211,13 @@ class MemorySaverNode:
         if state.get("errors"):
             metadata["errors"] = state["errors"]
 
-        await memory_manager.save_message_to_memory(
+        message_id = await memory_manager.save_message_to_memory(
             conversation_id=conversation_id,
             role="assistant",
             content=response,
             metadata=metadata,
         )
+        state["current_message_id"] = message_id
 
         # Save conversation turns to Qdrant for semantic search in future turns
         # All intents save the user query so context is always retrievable.

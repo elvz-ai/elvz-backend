@@ -155,7 +155,7 @@ class RouterNode:
                     state["working_memory"]["route"] = route
                     state["working_memory"]["needs_data_check"] = False
                     if state.get("current_intent") is not None:
-                        state["current_intent"]["type"] = "artifact"
+                        state["current_intent"]["type"] = "modification"
                     logger.info(
                         "Pending modification resolved via LLM",
                         artifact_id=resolved.get("id"),
@@ -227,7 +227,7 @@ class RouterNode:
                     state["working_memory"]["route"] = route
                     state["working_memory"]["needs_data_check"] = False
                     if state.get("current_intent") is not None:
-                        state["current_intent"]["type"] = "artifact"
+                        state["current_intent"]["type"] = "modification"
                     logger.info(
                         "Artifact resolved via LLM",
                         confidence=confidence,
@@ -267,7 +267,7 @@ class RouterNode:
                     state["working_memory"]["route"] = route
                     state["working_memory"]["needs_data_check"] = False
                     if state.get("current_intent") is not None:
-                        state["current_intent"]["type"] = "artifact"
+                        state["current_intent"]["type"] = "modification"
 
                 if is_modification_override and intent_type != "modification":
                     logger.info(
@@ -288,6 +288,11 @@ class RouterNode:
                 state["working_memory"]["needs_data_check"] = False
 
             elif intent_type == "clarification":
+                route = "qa_response"
+                state["working_memory"]["route"] = route
+                state["working_memory"]["needs_data_check"] = False
+
+            elif intent_type == "greeting":
                 route = "qa_response"
                 state["working_memory"]["route"] = route
                 state["working_memory"]["needs_data_check"] = False

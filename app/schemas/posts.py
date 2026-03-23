@@ -37,6 +37,11 @@ class GeneratePostRequest(BaseModel):
         max_length=10000,
         description="User's draft text or previously generated text for refinement",
     )
+    elf: str = Field(
+        ...,
+        min_length=1,
+        description="Elf agent slug",
+    )
 
 
 class GeneratePostArtifact(BaseModel):
@@ -65,6 +70,7 @@ class GenerateImageRequest(BaseModel):
         max_length=2000,
         description="Text prompt describing the desired image",
     )
+    elf: str = Field(..., min_length=1, description="Elf agent slug")
 
 
 class GenerateImageResponse(BaseModel):
@@ -84,6 +90,7 @@ class RegenerateImageRequest(BaseModel):
         max_length=2000,
         description="Improvement instructions for the current image",
     )
+    elf: str = Field(..., min_length=1, description="Elf agent slug")
 
 
 class RegenerateImageResponse(BaseModel):

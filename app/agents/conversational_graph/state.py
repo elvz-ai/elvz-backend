@@ -14,7 +14,7 @@ from langgraph.graph import add_messages
 
 class IntentClassification(TypedDict, total=False):
     """Intent classification result."""
-    type: str  # qa, artifact, clarification, multi_platform
+    type: str  # qa, artifact, clarification, multi_platform, modification, greeting
     confidence: float
     entities: dict  # {platform, topic, action, etc.}
     reasoning: str

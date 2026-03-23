@@ -136,8 +136,8 @@ class StreamAggregatorNode:
                 "Please rephrase your message."
             )
 
-        # Q&A response (includes clarification/memory questions)
-        if intent_type in ["qa", "clarification"]:
+        # Q&A response (includes clarification/greeting)
+        if intent_type in ["qa", "clarification", "greeting"]:
             return await self._generate_qa_response(state)
 
         # Artifact response

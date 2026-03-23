@@ -6,8 +6,6 @@ Classifies user intent to route the conversation appropriately.
 
 import json
 import time
-from typing import Optional
-
 import structlog
 
 from app.agents.conversational_graph.state import (
@@ -21,49 +19,89 @@ from app.core.llm_clients import LLMMessage, llm_client
 logger = structlog.get_logger(__name__)
 
 
-INTENT_CLASSIFICATION_PROMPT = """You are an intent classifier for a social media content generation assistant.
+INTENT_CLASSIFICATION_PROMPT = """You are an intent classifier for an AI content generation assistant called Elvz.
 
-Analyze the user's message and classify the intent into one of these categories:
+Classify the user's message into one of these types:
 
-1. **artifact** - User wants to generate content (post, image, hashtags, schedule)
-   - Examples: "Create a LinkedIn post", "Generate content about AI", "Write a post for Instagram"
+- **artifact** — User wants to generate content (social post, blog, image, hashtags, schedule)
+  Examples: "Create a LinkedIn post", "Write a post about AI", "Generate Instagram content"
 
-2. **qa** - User is asking a question or seeking information
-   - Examples: "What are best practices for LinkedIn?", "How do I increase engagement?"
+- **qa** — User is asking a question or seeking information about a specific topic
+  Examples: "What are best practices for LinkedIn?", "How do I increase engagement?", "Explain SEO strategies"
 
-3. **clarification** - User is responding to a follow-up question or providing more context
-   - Examples: Responses after being asked for topic/platform
+- **clarification** — User is ANSWERING a question that the assistant just asked in the previous message.
+  The assistant asked for missing information, and the user is providing it.
+  Examples:
+    - Assistant asked "Which platform?" → User says "LinkedIn" → clarification
+    - Assistant asked "What topic?" → User says "About AI trends" → clarification
+    - Assistant asked "Which post to modify?" → User says "The first one" → clarification
+  KEY RULE: If the MOST RECENT assistant message is a QUESTION, and the user's current message is a SHORT ANSWER to that question, this is **clarification**.
 
-4. **multi_platform** - User wants content for multiple platforms at once
-   - Examples: "Generate posts for LinkedIn and Facebook", "Create content for all my platforms"
+- **multi_platform** — User wants content for multiple platforms at once
+  Examples: "Generate posts for LinkedIn and Facebook", "Create content for all my platforms"
 
-5. **modification** - User wants to modify previously generated content
-   - Examples: "Make it shorter", "Change the tone", "Add more hashtags"
+- **modification** — User wants to CHANGE, UPDATE, or MODIFY content that was ALREADY GENERATED.
+  The content must already exist. The user is requesting a change to it.
+  Examples:
+    - "Make it shorter" — changing existing text
+    - "Change the tone to casual" — changing existing text style
+    - "Add more hashtags" — updating existing hashtags
+    - "Add a watermark to the image" — updating existing image
+    - "Change the schedule to 3pm" — updating existing schedule
+    - "Can you update the post you just created" — referencing previous artifact
+  KEY RULE: If previously generated content EXISTS in the conversation, and the user is asking to ALTER it, this is **modification** — NOT artifact, NOT clarification.
 
-Also extract any relevant entities:
-- platform: linkedin, instagram, facebook, twitter, tiktok
-- topic: what the content should be about
-- tone: professional, casual, humorous, inspirational
-- action: create, modify, analyze, schedule
+- **greeting** — User is sending a simple greeting or pleasantry with no actionable request
+  Examples: "hey", "hi", "hello", "good morning", "thanks", "thank you", "bye"
+  NOT greeting: "what can you do", "what are your capabilities" — these are **qa**
 
-Also determine which content modalities are relevant for searching context:
-- "text" - Always include for text-based queries
-- "image" - Include when user mentions images, visuals, photos, graphics, design
-- "audio" - Include when user mentions audio, podcast, voice, sound
-- "video" - Include when user mentions video, reels, stories, clips
+Extract entities:
+- platform: linkedin, instagram, facebook, twitter, tiktok (or null)
+- platforms: list (for multi_platform)
+- topic: what the content should be about (or null)
+- tone: professional, casual, humorous, inspirational (or null)
+- action: create, modify, analyze, schedule (or null)
 
-User Message: {user_message}
+Determine relevant search modalities:
+- "text" — always include
+- "image" — when user mentions images, visuals, photos, graphics
+- "video" — when user mentions video, reels, stories, clips
 
-Recent Conversation Context:
+---
+
+## CURRENT QUERY (classify THIS message):
+"{user_message}"
+
+## PREVIOUS CONVERSATION HISTORY (numbered, higher number = more recent):
 {conversation_context}
 
-Respond in JSON format:
+---
+
+INSTRUCTIONS:
+- Classify the CURRENT QUERY based on what the user is asking RIGHT NOW.
+- Use the PREVIOUS CONVERSATION HISTORY to understand context.
+
+HOW TO DISTINGUISH clarification vs modification:
+1. Look at the MOST RECENT assistant message in the history.
+2. If that assistant message is a QUESTION (asking for platform, topic, which post, etc.)
+   AND the current query is ANSWERING that question → **clarification**
+3. If the assistant previously GENERATED content (a post, image, etc.)
+   AND the current query asks to CHANGE that content → **modification**
+
+Examples with history:
+  - History: Assistant asked "Which platform?" → User says "for linkedin" → **clarification**
+  - History: Assistant generated a post → User says "make it shorter" → **modification**
+  - History: Assistant generated a post → User says "add watermark to the image" → **modification**
+  - History: Assistant asked "What topic?" → User says "wildlife protection" → **clarification**
+  - History: Any → User says "create a new post about AI" → **artifact** (new request)
+
+Respond in JSON:
 {{
-    "type": "artifact|qa|clarification|multi_platform|modification",
+    "type": "artifact|qa|clarification|multi_platform|modification|greeting",
     "confidence": 0.0-1.0,
     "entities": {{
         "platform": "platform or null",
-        "platforms": ["list of platforms if multi_platform"],
+        "platforms": ["list if multi_platform"],
         "topic": "topic or null",
         "tone": "tone or null",
         "action": "action or null"
@@ -79,6 +117,7 @@ class IntentClassifierNode:
     Classifies user intent for routing decisions.
 
     Uses LLM to understand user's goal and extract entities.
+    Context evaluation for HITL is handled separately by FollowUpDetectorNode.
     """
 
     async def __call__(self, state: ConversationState) -> ConversationState:
@@ -100,7 +139,7 @@ class IntentClassifierNode:
             # Build conversation context from recent messages
             context = self._build_context(state)
 
-            # Classify intent
+            # Classify intent via LLM
             intent = await self._classify_intent(
                 state["current_input"],
                 context,
@@ -141,7 +180,7 @@ class IntentClassifierNode:
 
         except Exception as e:
             logger.error("Intent classification failed", error=str(e))
-            # Default to artifact intent on error
+            # Default to artifact intent on error — never block on failure
             state["current_intent"] = IntentClassification(
                 type="artifact",
                 confidence=0.5,
@@ -156,19 +195,24 @@ class IntentClassifierNode:
         return state
 
     def _build_context(self, state: ConversationState) -> str:
-        """Build conversation context string from recent messages."""
+        """Build numbered conversation context from recent messages.
+
+        Uses last 10 turns with full content (no truncation).
+        Higher number = more recent message.
+        """
         messages = state.get("messages", [])
 
         if not messages:
-            return "No previous conversation context."
+            return "No previous conversation history."
 
+        recent = messages[-10:]
         context_parts = []
-        for msg in messages[-5:]:  # Last 5 messages
-            role = getattr(msg, "type", "unknown")
-            content = getattr(msg, "content", str(msg))[:200]
-            context_parts.append(f"{role}: {content}")
+        for i, msg in enumerate(recent, start=1):
+            role = "USER" if getattr(msg, "type", "unknown") == "human" else "ASSISTANT"
+            content = getattr(msg, "content", str(msg))
+            context_parts.append(f"[{i}] {role}: {content}")
 
-        return "\n".join(context_parts) if context_parts else "No previous context."
+        return "\n".join(context_parts) if context_parts else "No previous conversation history."
 
     async def _classify_intent(
         self,
@@ -189,6 +233,12 @@ class IntentClassifierNode:
             user_message=user_message,
             conversation_context=conversation_context,
         )
+
+        print("\n" + "=" * 80)
+        print("INTENT CLASSIFICATION — FULL PROMPT SENT TO LLM")
+        print("=" * 80)
+        print(prompt)
+        print("=" * 80 + "\n")
 
         messages = [
             LLMMessage(

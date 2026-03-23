@@ -214,7 +214,8 @@ class ContentAgent:
     ) -> dict:
         """Generate content using Grok."""
 
-        content_strategy = content_strategy or {}
+        if not isinstance(content_strategy, dict):
+            content_strategy = {}
 
         char_limit = PLATFORM_LIMITS.get(platform, 3000)
 
@@ -291,7 +292,17 @@ class ContentAgent:
         
         try:
             result = json.loads(response.content)
-            
+
+            # json.loads can return a string for JSON like '"text"' — treat as fallback
+            if not isinstance(result, dict):
+                return {
+                    "post_text": str(result),
+                    "hook": "",
+                    "cta": "",
+                    "platform": platform,
+                    "character_count": len(str(result)),
+                }
+
             content = {
                 "post_text": result.get("post_text", ""),
                 "hook": result.get("hook", ""),
