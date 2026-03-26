@@ -85,7 +85,8 @@ async def _resolve_artifact_llm(
             LLMMessage(role="user", content=prompt),
         ]
 
-        response = await llm_client.generate_fast(messages, json_mode=True)
+        from app.core.model_config import TaskType
+        response = await llm_client.generate_for_task(TaskType.INTENT_CLASSIFICATION, messages, json_mode=True)
         result = json.loads(response.content)
 
         idx = result.get("index", 0)

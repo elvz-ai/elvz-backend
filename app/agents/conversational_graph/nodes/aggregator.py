@@ -299,7 +299,8 @@ class StreamAggregatorNode:
             # Token streaming path
             chunks = []
             try:
-                async for chunk in llm_client.stream_generate(messages=messages):
+                from app.core.model_config import TaskType
+                async for chunk in llm_client.stream_generate_for_task(task=TaskType.RESPONSE_AGGREGATION, messages=messages):
                     chunks.append(chunk)
                     event_bus.push_token(chunk, node="stream_aggregator")
                 return "".join(chunks)

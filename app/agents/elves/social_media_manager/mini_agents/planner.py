@@ -236,9 +236,9 @@ class PlannerAgent:
         
         from app.core.model_config import TaskType
         
-        # Use fast model for planning (quick decision)
+        # Use planning model for content strategy
         response = await llm_client.generate_for_task(
-            task=TaskType.INTENT_CLASSIFICATION,  # Use fast model
+            task=TaskType.PLANNING,
             messages=messages,
             json_mode=True,
         )

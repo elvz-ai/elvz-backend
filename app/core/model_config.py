@@ -41,6 +41,8 @@ class TaskType(str, Enum):
     # General
     GENERAL = "general"
     FAST = "fast"
+    TOOL_PLANNING = "tool_planning"
+    PLANNING = "planning"
 
 
 class ModelConfig(BaseModel):
@@ -59,8 +61,7 @@ class ModelConfig(BaseModel):
 # 
 # Popular models:
 # - anthropic/claude-3.5-sonnet (fast, smart)
-# - openai/gpt-4o (balanced)
-# - openai/gpt-4o-mini (fast, cheap)
+# - google/gemini-3-flash-preview (balanced, large context)
 # - google/gemini-flash-1.5 (fast)
 # - meta-llama/llama-3.1-70b-instruct (open source)
 # - x-ai/grok-beta (fast)
@@ -70,7 +71,7 @@ MODEL_CONFIG: dict[str, ModelConfig] = {
     # --- Intent Classification ---
     # Fast model for quick routing decisions
     TaskType.INTENT_CLASSIFICATION: ModelConfig(
-        model="openai/gpt-4o-mini",
+        model="google/gemini-3-flash-preview",
         fallbacks=["google/gemini-flash-1.5", "anthropic/claude-3-haiku"],
         temperature=0.3,
         max_tokens=500,
@@ -80,23 +81,23 @@ MODEL_CONFIG: dict[str, ModelConfig] = {
     # Fast model for high-quality content
     TaskType.CONTENT_GENERATION: ModelConfig(
         model="x-ai/grok-beta",
-        fallbacks=["anthropic/claude-3.5-sonnet", "openai/gpt-4o-mini"],
+        fallbacks=["anthropic/claude-3.5-sonnet", "google/gemini-3-flash-preview"],
         temperature=0.7,
-        max_tokens=2000,
+        max_tokens=4000,
     ),
     
     # --- Hashtag & Timing Optimization ---
     # Fast model for structured output
     TaskType.HASHTAG_OPTIMIZATION: ModelConfig(
         model="x-ai/grok-beta",
-        fallbacks=["anthropic/claude-3.5-sonnet", "openai/gpt-4o-mini"],
+        fallbacks=["anthropic/claude-3.5-sonnet", "google/gemini-3-flash-preview"],
         temperature=0.5,
         max_tokens=1000,
     ),
     
     TaskType.TIMING_OPTIMIZATION: ModelConfig(
         model="x-ai/grok-beta",
-        fallbacks=["anthropic/claude-3.5-sonnet", "openai/gpt-4o-mini"],
+        fallbacks=["anthropic/claude-3.5-sonnet", "google/gemini-3-flash-preview"],
         temperature=0.3,
         max_tokens=500,
     ),
@@ -105,7 +106,7 @@ MODEL_CONFIG: dict[str, ModelConfig] = {
     # Creative model for visual recommendations
     TaskType.VISUAL_DESCRIPTION: ModelConfig(
         model="x-ai/grok-beta",
-        fallbacks=["anthropic/claude-3.5-sonnet", "openai/gpt-4o-mini"],
+        fallbacks=["anthropic/claude-3.5-sonnet", "google/gemini-3-flash-preview"],
         temperature=0.7,
         max_tokens=1000,
     ),
@@ -122,13 +123,13 @@ MODEL_CONFIG: dict[str, ModelConfig] = {
     # --- SEO Tasks ---
     TaskType.SEO_ANALYSIS: ModelConfig(
         model="anthropic/claude-3.5-sonnet",
-        fallbacks=["openai/gpt-4o"],
+        fallbacks=["google/gemini-3-flash-preview"],
         temperature=0.5,
         max_tokens=3000,
     ),
     
     TaskType.KEYWORD_RESEARCH: ModelConfig(
-        model="openai/gpt-4o-mini",
+        model="google/gemini-3-flash-preview",
         fallbacks=["google/gemini-flash-1.5"],
         temperature=0.5,
         max_tokens=1500,
@@ -137,13 +138,13 @@ MODEL_CONFIG: dict[str, ModelConfig] = {
     # --- Copywriter Tasks ---
     TaskType.BLOG_WRITING: ModelConfig(
         model="anthropic/claude-3.5-sonnet",
-        fallbacks=["openai/gpt-4o"],
+        fallbacks=["google/gemini-3-flash-preview"],
         temperature=0.7,
-        max_tokens=4000,
+        max_tokens=8000,
     ),
     
     TaskType.AD_COPY: ModelConfig(
-        model="openai/gpt-4o",
+        model="google/gemini-3-flash-preview",
         fallbacks=["anthropic/claude-3.5-sonnet"],
         temperature=0.8,
         max_tokens=1000,
@@ -151,25 +152,44 @@ MODEL_CONFIG: dict[str, ModelConfig] = {
     
     # --- Response Aggregation ---
     TaskType.RESPONSE_AGGREGATION: ModelConfig(
-        model="openai/gpt-4o-mini",
+        model="google/gemini-3-flash-preview",
         fallbacks=["google/gemini-flash-1.5"],
         temperature=0.5,
-        max_tokens=2000,
+        max_tokens=4000,
     ),
     
     # --- General & Fast ---
     TaskType.GENERAL: ModelConfig(
-        model="openai/gpt-4o",
+        model="google/gemini-3-flash-preview",
         fallbacks=["anthropic/claude-3.5-sonnet", "x-ai/grok-beta"],
         temperature=0.7,
-        max_tokens=4000,
+        max_tokens=8000,
     ),
     
     TaskType.FAST: ModelConfig(
-        model="openai/gpt-4o-mini",
+        model="google/gemini-3-flash-preview",
         fallbacks=["google/gemini-flash-1.5", "anthropic/claude-3-haiku"],
         temperature=0.7,
-        max_tokens=2000,
+        max_tokens=4000,
+    ),
+
+    # --- Tool Planning ---
+    # Deterministic model for deciding which modification tools to call.
+    # Needs 4000 tokens because direct_edit tool includes full post text in JSON.
+    TaskType.TOOL_PLANNING: ModelConfig(
+        model="google/gemini-3-flash-preview",
+        fallbacks=["google/gemini-flash-1.5", "anthropic/claude-3-haiku"],
+        temperature=0.3,
+        max_tokens=4000,
+    ),
+
+    # --- Content Planning ---
+    # Moderate creativity for content strategy and audience targeting.
+    TaskType.PLANNING: ModelConfig(
+        model="google/gemini-3-flash-preview",
+        fallbacks=["google/gemini-flash-1.5"],
+        temperature=0.5,
+        max_tokens=1500,
     ),
 }
 

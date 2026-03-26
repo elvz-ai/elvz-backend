@@ -799,6 +799,23 @@ class LLMClient:
         ):
             yield chunk
     
+    async def stream_generate_for_task(
+        self,
+        task: str,
+        messages: list[LLMMessage],
+    ):
+        """Stream completion using OpenRouter with task-based model routing."""
+        from app.core.model_config import get_model_config
+        config = get_model_config(task)
+        async for chunk in self.openrouter.stream_generate(
+            messages=messages,
+            model=config.model,
+            fallbacks=config.fallbacks,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+        ):
+            yield chunk
+
     async def generate_fast(
         self,
         messages: list[LLMMessage],

@@ -372,11 +372,12 @@ class IntentClassifier:
             LLMMessage(role="user", content=user_prompt),
         ]
         
-        response = await llm_client.generate_fast(messages, json_mode=True)
-        
+        from app.core.model_config import TaskType
+        response = await llm_client.generate_for_task(TaskType.INTENT_CLASSIFICATION, messages, json_mode=True)
+
         try:
             result = json.loads(response.content)
-            
+
             return IntentClassification(
                 primary_elf=ElfType(result.get("primary_elf", "assistant")),
                 secondary_elves=[ElfType(e) for e in result.get("secondary_elves", [])],

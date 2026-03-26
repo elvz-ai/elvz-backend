@@ -642,7 +642,8 @@ class ArtifactModifierNode:
         ]
 
         try:
-            response = await llm_client.generate_fast(messages, json_mode=True)
+            from app.core.model_config import TaskType
+            response = await llm_client.generate_for_task(TaskType.TOOL_PLANNING, messages, json_mode=True)
             result = json.loads(response.content)
 
             logger.info("Tool planning LLM response", raw_result=result)
