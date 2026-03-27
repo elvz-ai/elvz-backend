@@ -122,8 +122,11 @@ Rules:
 - For image changes, use regenerate_image (if image exists) or generate_image (if no image)
 - Always return valid JSON
 
-Return a JSON array of tool calls:
-[{{"tool": "tool_name", "parameters": {{...}}}}]
+Return JSON with tool calls and a friendly response message:
+{{
+  "tool_calls": [{{"tool": "tool_name", "parameters": {{...}}}}],
+  "response_message": "A brief, friendly 1-2 sentence confirmation of what you're changing. Be conversational and natural. No bullet points or markdown. If calling update_text, leave response_message empty — the content agent will provide it."
+}}
 
 If the user is asking a question (not modifying), return:
 {{"no_tools": true, "response": "your conversational answer"}}"""
@@ -166,6 +169,9 @@ class ToolExecutor:
         user_id: str,
     ) -> list[ToolResult]:
         """Execute tool calls sequentially (order matters for compound edits)."""
+        # Track original ID for refresh — artifact may become a version row after first tool
+        original_id = artifact.parent_artifact_id or artifact.id
+
         results = []
         for call in tool_calls:
             if not isinstance(call, dict):
@@ -178,9 +184,9 @@ class ToolExecutor:
             result = await self._execute_single(tool_name, params, artifact, user_id)
             results.append(result)
 
-            # Refresh artifact after each tool (content may have changed)
+            # Refresh to latest version after each tool
             if result.success:
-                refreshed = await artifact_service.get_artifact(artifact.id)
+                refreshed = await artifact_service.get_current_artifact(original_id)
                 if refreshed:
                     artifact = refreshed
 
@@ -269,7 +275,12 @@ class ToolExecutor:
             prompt=prompt,
         )
 
-        return ToolResult(tool_name="update_text", success=True, message="Updated post text", updates=updates)
+        # Use ContentAgent's natural response_message if available
+        response_msg = ""
+        if isinstance(content, dict):
+            response_msg = content.get("response_message", "")
+
+        return ToolResult(tool_name="update_text", success=True, message=response_msg or "Updated post text", updates=updates)
 
     async def _execute_update_hashtags(self, params: dict, artifact, user_id: str) -> ToolResult:
         """Update hashtags — either from explicit list or AI-generated."""
@@ -530,6 +541,21 @@ class ArtifactModifierNode:
         try:
             # 1. Get target artifact (already resolved by router)
             target = state.get("target_artifact") or state.get("last_artifact")
+
+            # ── DEBUG: Print artifact state at entry ──
+            print("\n" + "=" * 80)
+            print("🔧 ARTIFACT MODIFIER NODE — ENTRY DEBUG")
+            print("=" * 80)
+            print(f"  target_artifact from state: {json.dumps(state.get('target_artifact'), indent=2, default=str) if state.get('target_artifact') else 'None'}")
+            print(f"  last_artifact from state:   {json.dumps(state.get('last_artifact'), indent=2, default=str) if state.get('last_artifact') else 'None'}")
+            print(f"  artifact_history count:     {len(state.get('artifact_history') or [])}")
+            print(f"  artifact_history IDs:       {[a.get('id') for a in (state.get('artifact_history') or [])]}")
+            print(f"  artifacts in state:         {len(state.get('artifacts') or [])}")
+            print(f"  modification_feedback:      {state.get('modification_feedback')}")
+            print(f"  current_input:              {state.get('current_input')}")
+            print(f"  current_intent:             {state.get('current_intent')}")
+            print("=" * 80 + "\n")
+
             # Redis may return last_artifact as a JSON string
             if isinstance(target, str):
                 try:
@@ -541,16 +567,38 @@ class ArtifactModifierNode:
                 self._trace(state, start_time, "no_target")
                 return state
 
-            # 2. Load fresh artifact from DB
-            artifact = await artifact_service.get_artifact(target["id"])
+            # 2. Load fresh artifact from DB (latest version)
+            artifact = await artifact_service.get_current_artifact(target["id"])
             if not artifact:
                 state["final_response"] = "That post no longer exists. Would you like to create a new one?"
                 self._trace(state, start_time, "artifact_not_found")
                 return state
 
+            # ── DEBUG: Print loaded artifact details ──
+            loaded_content = _safe_content(artifact)
+            print("\n" + "-" * 80)
+            print("📄 LOADED ARTIFACT FROM DB")
+            print("-" * 80)
+            print(f"  artifact.id:              {artifact.id}")
+            print(f"  artifact.parent_id:       {artifact.parent_artifact_id}")
+            print(f"  artifact.platform:        {artifact.platform}")
+            print(f"  artifact.version:         {getattr(artifact, 'version', 'N/A')}")
+            print(f"  content.text:             {(loaded_content.get('text') or loaded_content.get('post_text') or '')[:200]}")
+            print(f"  content.hashtags:         {loaded_content.get('hashtags', [])}")
+            print(f"  content.image_url:        {(loaded_content.get('image_url') or 'None')[:100]}")
+            print(f"  content.image_prompt:     {(loaded_content.get('image_prompt') or 'None')[:100]}")
+            print(f"  content.schedule:         {loaded_content.get('schedule') or loaded_content.get('posting_schedule')}")
+            print("-" * 80 + "\n")
+
             # 3. Ask LLM which tools to call
             user_message = state.get("modification_feedback") or state.get("current_input", "")
-            tool_calls = await self._plan_tools(artifact, user_message)
+            plan_result = await self._plan_tools(artifact, user_message)
+
+            # Unpack (tool_calls, response_message) tuple
+            if isinstance(plan_result, tuple):
+                tool_calls, planning_response = plan_result
+            else:
+                tool_calls, planning_response = plan_result, ""
 
             # 4. Handle "no tools" case (user asked a question, not a modification)
             if isinstance(tool_calls, dict) and tool_calls.get("no_tools"):
@@ -564,6 +612,15 @@ class ArtifactModifierNode:
                 return state
 
             # 5. Execute tools sequentially
+            # ── DEBUG: Print selected tools before execution ──
+            print("\n" + "-" * 80)
+            print("🔨 TOOLS SELECTED FOR EXECUTION")
+            print("-" * 80)
+            for i, tc in enumerate(tool_calls):
+                print(f"  [{i+1}] Tool: {tc.get('tool')}")
+                print(f"      Params: {json.dumps(tc.get('parameters', {}), indent=8, default=str)}")
+            print("-" * 80 + "\n")
+
             logger.info(
                 "Executing modification tools",
                 tool_count=len(tool_calls),
@@ -573,11 +630,26 @@ class ArtifactModifierNode:
 
             results = await self._executor.execute_tools(tool_calls, artifact, state["user_id"])
 
-            # 6. Build response
-            state["final_response"] = self._build_response(results, tool_calls)
+            # ── DEBUG: Print tool execution results ──
+            print("\n" + "-" * 80)
+            print("✅ TOOL EXECUTION RESULTS")
+            print("-" * 80)
+            for i, r in enumerate(results):
+                status = "✅ SUCCESS" if r.success else "❌ FAILED"
+                print(f"  [{i+1}] {r.tool_name}: {status}")
+                print(f"      Message: {r.message}")
+                if r.error:
+                    print(f"      Error:   {r.error}")
+                if r.updates:
+                    print(f"      Updates: {json.dumps(r.updates, indent=8, default=str)[:500]}")
+            print("-" * 80 + "\n")
 
-            # 7. Refresh artifact and put in state
-            updated_artifact = await artifact_service.get_artifact(artifact.id)
+            # 6. Build response
+            state["final_response"] = self._build_response(results, planning_response)
+
+            # 7. Refresh artifact (latest version) and put in state
+            original_id = target["id"]  # always the original ID from state
+            updated_artifact = await artifact_service.get_current_artifact(original_id)
             if updated_artifact:
                 artifact_dict = updated_artifact.to_dict()
                 state["artifacts"] = [artifact_dict]
@@ -618,8 +690,8 @@ class ArtifactModifierNode:
 
         return state
 
-    async def _plan_tools(self, artifact, user_message: str) -> list[dict] | dict:
-        """Ask LLM which tools to call."""
+    async def _plan_tools(self, artifact, user_message: str) -> tuple[list[dict] | dict, str]:
+        """Ask LLM which tools to call. Returns (tool_calls, response_message)."""
         content = _safe_content(artifact)
 
         prompt = TOOL_PLANNING_PROMPT.format(
@@ -632,6 +704,14 @@ class ArtifactModifierNode:
             user_message=user_message,
             tools_json=json.dumps(MODIFICATION_TOOLS, indent=2),
         )
+
+        # ── DEBUG: Print the full prompt sent to the LLM ──
+        print("\n" + "=" * 80)
+        print("📨 TOOL PLANNING PROMPT SENT TO LLM")
+        print("=" * 80)
+        print(f"  System: You are a tool planner for post modifications. Respond with valid JSON only.")
+        print(f"  User prompt:\n{prompt}")
+        print("=" * 80 + "\n")
 
         messages = [
             LLMMessage(
@@ -646,29 +726,42 @@ class ArtifactModifierNode:
             response = await llm_client.generate_for_task(TaskType.TOOL_PLANNING, messages, json_mode=True)
             result = json.loads(response.content)
 
+            # ── DEBUG: Print the LLM response and selected tools ──
+            print("\n" + "=" * 80)
+            print("🤖 TOOL PLANNING LLM RESPONSE")
+            print("=" * 80)
+            print(f"  Raw LLM content: {response.content}")
+            print(f"  Parsed result:   {json.dumps(result, indent=2, default=str)}")
+            print("=" * 80 + "\n")
+
             logger.info("Tool planning LLM response", raw_result=result)
+
+            # Extract response_message from dict results
+            response_message = ""
+            if isinstance(result, dict):
+                response_message = result.get("response_message", "")
 
             # Handle various LLM response formats
             if isinstance(result, list):
-                return self._normalize_tool_calls(result)
+                return self._normalize_tool_calls(result), ""
             if isinstance(result, dict):
                 if result.get("no_tools"):
-                    return result
+                    return result, ""
                 # LLM wrapped in {"tool_calls": [...]}
                 if "tool_calls" in result and isinstance(result["tool_calls"], list):
-                    return self._normalize_tool_calls(result["tool_calls"])
+                    return self._normalize_tool_calls(result["tool_calls"]), response_message
                 # Single tool call as object {"tool": "...", "parameters": {...}}
                 if result.get("tool"):
-                    return self._normalize_tool_calls([result])
+                    return self._normalize_tool_calls([result]), response_message
                 # LLM wrapped in {"tools": [...]}
                 if "tools" in result and isinstance(result["tools"], list):
-                    return self._normalize_tool_calls(result["tools"])
+                    return self._normalize_tool_calls(result["tools"]), response_message
 
             logger.warning("Unexpected tool planning response format", result_type=type(result).__name__)
-            return []
+            return [], ""
         except Exception as e:
             logger.error("Tool planning failed", error=str(e))
-            return []
+            return [], ""
 
     def _normalize_tool_calls(self, tool_calls) -> list[dict]:
         """Ensure each tool call has a valid structure with dict parameters."""
@@ -690,10 +783,27 @@ class ArtifactModifierNode:
             normalized.append({"tool": tool_name, "parameters": params})
         return normalized
 
-    def _build_response(self, results: list[ToolResult], tool_calls: list[dict]) -> str:
-        """Build user-facing response from tool results."""
+    def _build_response(self, results: list[ToolResult], planning_message: str = "") -> str:
+        """Build user-facing response from tool results.
+
+        Priority chain:
+        1. ContentAgent's response_message (for update_text — knows actual result)
+        2. Tool planning LLM's response_message (for other tools — knows what's planned)
+        3. Hardcoded template (fallback if both missing or tools failed)
+        """
         all_success = all(r.success for r in results)
 
+        if all_success:
+            # Prefer ContentAgent's natural response for update_text
+            for r in results:
+                if r.tool_name == "update_text" and r.message and r.message != "Updated post text":
+                    return r.message
+
+            # Fall back to tool planning LLM's response_message
+            if planning_message:
+                return planning_message
+
+        # Final fallback: template
         parts = []
         for result in results:
             if result.success:

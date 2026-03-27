@@ -278,8 +278,13 @@ class FollowUpDetectorNode:
 
         follow_up_q = eval_result.get("follow_up_question") or "Could you provide more details?"
         state["follow_up_questions"] = [follow_up_q]
-        state["suggestions"] = eval_result.get("follow_up_suggestions", [])
-        state["final_response"] = follow_up_q
+        suggestions = eval_result.get("follow_up_suggestions", [])
+        state["suggestions"] = suggestions
+        if suggestions:
+            suggestion_list = "\n".join(f"- {s}" for s in suggestions)
+            state["final_response"] = f"{follow_up_q}\n\nHere are some ideas to get you started:\n{suggestion_list}"
+        else:
+            state["final_response"] = follow_up_q
         state["requires_approval"] = True
         state["follow_up_context"] = {
             "original_query": state.get("current_input", ""),

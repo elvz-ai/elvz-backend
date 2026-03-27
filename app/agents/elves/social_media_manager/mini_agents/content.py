@@ -250,6 +250,9 @@ class ContentAgent:
                 f"## Modification Request\n{modification_feedback}\n\n"
                 "Revise the post above according to the modification request. "
                 "Keep the same topic and core message but apply the requested changes.\n\n"
+                "IMPORTANT: Also include a \"response_message\" field in your JSON response — "
+                "a brief, friendly 1-2 sentence confirmation of what you changed. "
+                "Be conversational and natural, not robotic. No bullet points or markdown.\n\n"
             )
 
         # Prepend conversation history for modification context
@@ -309,6 +312,7 @@ class ContentAgent:
                 "cta": result.get("cta", ""),
                 "target_audience": result.get("target_audience", ""),
                 "tone": result.get("tone", ""),
+                "response_message": result.get("response_message", ""),
                 "platform": platform,
                 "character_count": len(result.get("post_text", "")),
             }

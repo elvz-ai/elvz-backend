@@ -113,6 +113,149 @@ class ArtifactService:
         async with get_db_context() as session:
             return await _get(session)
 
+    async def get_current_artifact(
+        self,
+        artifact_id: str,
+        db: Optional[AsyncSession] = None,
+    ) -> Optional[Artifact]:
+        """
+        Get the latest version of an artifact.
+
+        If the artifact has child versions, returns the most recent child.
+        Otherwise returns the artifact itself (it is the original with no edits).
+        """
+        async def _get(session: AsyncSession) -> Optional[Artifact]:
+            # Find latest child version
+            stmt = (
+                select(Artifact)
+                .where(Artifact.parent_artifact_id == artifact_id)
+                .order_by(Artifact.created_at.desc())
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            child = result.scalar_one_or_none()
+            if child:
+                return child
+
+            # No children — return the original
+            stmt = select(Artifact).where(Artifact.id == artifact_id)
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+        if db:
+            return await _get(db)
+        async with get_db_context() as session:
+            return await _get(session)
+
+    async def get_artifact_versions(
+        self,
+        artifact_id: str,
+        db: Optional[AsyncSession] = None,
+    ) -> list[Artifact]:
+        """
+        Get all versions of an artifact, ordered by created_at ascending.
+
+        Includes the original (parent_artifact_id IS NULL) as version 0,
+        followed by all child rows.
+        """
+        async def _get(session: AsyncSession) -> list[Artifact]:
+            stmt = (
+                select(Artifact)
+                .where(
+                    (Artifact.id == artifact_id) | (Artifact.parent_artifact_id == artifact_id)
+                )
+                .order_by(Artifact.created_at.asc())
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+        if db:
+            return await _get(db)
+        async with get_db_context() as session:
+            return await _get(session)
+
+    async def create_artifact_version(
+        self,
+        artifact_id: str,
+        updates: dict,
+        source: str = "user_edit",
+        prompt: Optional[str] = None,
+        message_id: Optional[str] = None,
+        db: Optional[AsyncSession] = None,
+    ) -> Optional[Artifact]:
+        """
+        Create a new version row for an artifact.
+
+        1. Resolves the original artifact ID
+        2. Gets the current version (latest child or original)
+        3. Merges updates into its content
+        4. Computes diff
+        5. Inserts a new child row with parent_artifact_id = original_id
+        """
+        async def _create(session: AsyncSession) -> Optional[Artifact]:
+            # Resolve original ID (in case artifact_id is already a version)
+            original = await self.get_artifact(artifact_id, session)
+            if not original:
+                return None
+
+            original_id = original.parent_artifact_id or original.id
+
+            # Get current version content
+            current = await self.get_current_artifact(original_id, session)
+            if not current:
+                return None
+
+            old_content = current.content or {}
+            new_content = {**old_content, **updates}
+
+            diff = _compute_content_diff(old_content, new_content)
+            if not diff:
+                return current  # No actual changes
+
+            # Build plain-text edit_diff: describes what changed between parent and this version
+            changed_fields = list(diff.get("changed", {}).keys())
+            added_fields = list(diff.get("added", {}).keys())
+            removed_fields = list(diff.get("removed", {}).keys())
+            parts = []
+            if changed_fields:
+                parts.append(f"changed {', '.join(changed_fields)}")
+            if added_fields:
+                parts.append(f"added {', '.join(added_fields)}")
+            if removed_fields:
+                parts.append(f"removed {', '.join(removed_fields)}")
+            edit_diff_text = ", ".join(parts) or "modified content"
+            if prompt:
+                edit_diff_text = f"{prompt} — {edit_diff_text}"
+
+            # Resolve fields from the original row for consistency
+            original_row = original if original.parent_artifact_id is None else await self.get_artifact(original_id, session)
+
+            version_id = str(uuid.uuid4())
+            version = Artifact(
+                id=version_id,
+                user_id=original_row.user_id,
+                conversation_id=current.conversation_id,
+                message_id=message_id,
+                batch_id=current.batch_id,
+                artifact_type=current.artifact_type,
+                platform=current.platform,
+                content=new_content,
+                status=current.status,
+                parent_artifact_id=original_id,
+                edit_diff=edit_diff_text,
+                was_published=current.was_published,
+                generation_metadata=current.generation_metadata,
+            )
+            session.add(version)
+            await session.commit()
+            await session.refresh(version)
+            return version
+
+        if db:
+            return await _create(db)
+        async with get_db_context() as session:
+            return await _create(session)
+
     async def list_artifacts(
         self,
         conversation_id: str,
@@ -142,6 +285,7 @@ class ArtifactService:
             stmt = (
                 select(Artifact)
                 .where(Artifact.conversation_id == conversation_id)
+                .where(Artifact.parent_artifact_id.is_(None))  # only originals
                 .order_by(Artifact.created_at.desc())
                 .offset(offset)
                 .limit(limit)
@@ -189,7 +333,6 @@ class ArtifactService:
 
             if content is not None:
                 artifact.content = content
-                artifact.was_edited = True
             if status is not None:
                 artifact.status = status
 
@@ -248,7 +391,7 @@ class ArtifactService:
         db: Optional[AsyncSession] = None,
     ) -> Optional[Artifact]:
         """
-        Mark an artifact as published.
+        Mark an artifact as published. Always operates on the original row.
 
         Args:
             artifact_id: Artifact identifier
@@ -261,6 +404,12 @@ class ArtifactService:
             artifact = await self.get_artifact(artifact_id, session)
             if not artifact:
                 return None
+
+            # Resolve to original row for status updates
+            if artifact.parent_artifact_id:
+                artifact = await self.get_artifact(artifact.parent_artifact_id, session)
+                if not artifact:
+                    return None
 
             artifact.status = ArtifactStatus.PUBLISHED.value
             artifact.was_published = True
@@ -370,6 +519,7 @@ class ArtifactService:
             stmt = (
                 select(Artifact)
                 .where(Artifact.batch_id == batch_id)
+                .where(Artifact.parent_artifact_id.is_(None))  # only originals
                 .order_by(Artifact.created_at.asc())
             )
             result = await session.execute(stmt)
@@ -391,11 +541,12 @@ class ArtifactService:
         batch_id: str,
         db: Optional[AsyncSession] = None,
     ) -> list[Artifact]:
-        """Get all artifacts for a batch."""
+        """Get all original artifacts for a batch (excludes version rows)."""
         async def _get(session: AsyncSession) -> list[Artifact]:
             stmt = (
                 select(Artifact)
                 .where(Artifact.batch_id == batch_id)
+                .where(Artifact.parent_artifact_id.is_(None))  # only originals
                 .order_by(Artifact.created_at.asc())
             )
             result = await session.execute(stmt)
@@ -411,21 +562,23 @@ class ArtifactService:
         artifact_id: str,
         rating: Optional[int] = None,
         feedback: Optional[str] = None,
-        was_edited: bool = False,
         was_published: bool = False,
         db: Optional[AsyncSession] = None,
     ) -> Optional[Artifact]:
-        """Update artifact with user feedback and usage flags."""
+        """Update artifact with user feedback and usage flags. Operates on original row."""
         async def _update(session: AsyncSession) -> Optional[Artifact]:
             artifact = await self.get_artifact(artifact_id, session)
             if not artifact:
                 return None
+            # Resolve to original row
+            if artifact.parent_artifact_id:
+                artifact = await self.get_artifact(artifact.parent_artifact_id, session)
+                if not artifact:
+                    return None
             if rating is not None:
                 artifact.user_rating = rating
             if feedback is not None:
                 artifact.user_feedback = feedback
-            if was_edited:
-                artifact.was_edited = True
             if was_published:
                 artifact.was_published = True
                 artifact.status = ArtifactStatus.PUBLISHED.value
@@ -556,63 +709,22 @@ class ArtifactService:
         updates: dict,
         source: str = "user_edit",
         prompt: Optional[str] = None,
+        message_id: Optional[str] = None,
         db: Optional[AsyncSession] = None,
     ) -> Optional[Artifact]:
         """
-        Merge partial updates into artifact content and record the edit.
+        Create a new version row with merged content updates.
 
-        Args:
-            artifact_id: Artifact identifier
-            updates: Only the changed fields (e.g. {"text": "...", "hashtags": [...]})
-            source: Edit source ("user_edit", "regeneration")
-            prompt: Optional optimization prompt (stored for brain training)
-            db: Optional database session
-
-        Creates a revision entry with a field-level diff so the brain
-        can learn from user editing patterns.
+        Delegates to create_artifact_version(). Kept for backward compatibility.
         """
-        async def _update(session: AsyncSession) -> Optional[Artifact]:
-            artifact = await self.get_artifact(artifact_id, session)
-            if not artifact:
-                return None
-
-            old_content = artifact.content or {}
-
-            # Merge updates into existing content (unchanged fields preserved)
-            new_content = {**old_content, **updates}
-
-            # Compute diff only on the fields that were sent
-            diff = _compute_content_diff(old_content, new_content)
-
-            if not diff:
-                # No actual changes — return as-is
-                return artifact
-
-            # Append revision entry (array of objects, no version key)
-            entry = {
-                "diff": diff,
-                "after_edit": new_content,
-                "source": source,
-                "at": datetime.now(timezone.utc).isoformat(),
-            }
-            if prompt:
-                entry["prompt"] = prompt
-
-            history = list(artifact.edit_history or [])
-            history.append(entry)
-
-            artifact.content = new_content
-            artifact.edit_history = history
-            artifact.was_edited = True
-
-            await session.commit()
-            await session.refresh(artifact)
-            return artifact
-
-        if db:
-            return await _update(db)
-        async with get_db_context() as session:
-            return await _update(session)
+        return await self.create_artifact_version(
+            artifact_id=artifact_id,
+            updates=updates,
+            source=source,
+            prompt=prompt,
+            message_id=message_id,
+            db=db,
+        )
 
 
 def _compute_content_diff(old: dict, new: dict) -> dict:

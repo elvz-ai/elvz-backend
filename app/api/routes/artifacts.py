@@ -24,7 +24,6 @@ class ArtifactFeedbackRequest(BaseModel):
     """Request for artifact feedback."""
     rating: Optional[int] = Field(None, ge=1, le=5)
     feedback: Optional[str] = None
-    was_edited: bool = False
     was_published: bool = False
 
 
@@ -65,7 +64,8 @@ async def get_artifact(
         Artifact details
     """
     try:
-        artifact = await artifact_service.get_artifact(artifact_id)
+        # Returns latest version content, resolves transparently
+        artifact = await artifact_service.get_current_artifact(artifact_id)
 
         if not artifact:
             raise HTTPException(status_code=404, detail="Artifact not found")
@@ -108,12 +108,11 @@ async def submit_feedback(
         if artifact.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
-        # Update artifact with feedback
+        # Update artifact with feedback (operates on original row)
         updated_artifact = await artifact_service.update_artifact_feedback(
             artifact_id=artifact_id,
             rating=feedback_request.rating,
             feedback=feedback_request.feedback,
-            was_edited=feedback_request.was_edited,
             was_published=feedback_request.was_published,
         )
 
@@ -137,13 +136,12 @@ async def update_content(
     user_id: str = Depends(get_user_id),
 ) -> dict:
     """
-    Update artifact content and track the edit for brain training.
+    Update artifact content by creating a new version row.
 
     Send only the fields that changed (text, hashtags, image_url, schedule).
     Omitted fields keep their current values. The server merges updates into
-    the existing content JSONB, computes a field-level diff, and appends it
-    to edit_history. The original AI-generated content is preserved in
-    original_content.
+    the current content, computes a field-level diff, and creates a new
+    version row with parent_artifact_id linking back to the original.
 
     Args:
         artifact_id: Artifact identifier
@@ -159,7 +157,7 @@ async def update_content(
         if not updates:
             raise HTTPException(status_code=400, detail="No fields to update")
 
-        artifact = await artifact_service.get_artifact(artifact_id)
+        artifact = await artifact_service.get_current_artifact(artifact_id)
 
         if not artifact:
             raise HTTPException(status_code=404, detail="Artifact not found")
@@ -196,10 +194,10 @@ async def optimize_artifact(
 
     Calls ContentAgent directly (no planner/persona/optimization) with the
     artifact's current content as previous_content and the user's prompt
-    as modification_feedback. Saves with source="regeneration" in edit_history.
+    as modification_feedback. Creates a new version row with source="regeneration".
     """
     try:
-        artifact = await artifact_service.get_artifact(artifact_id)
+        artifact = await artifact_service.get_current_artifact(artifact_id)
 
         if not artifact:
             raise HTTPException(status_code=404, detail="Artifact not found")
@@ -254,12 +252,12 @@ async def optimize_artifact(
             prompt=request.prompt,
         )
 
-        # Return same shape as POST /posts/generate
+        # Return same shape as POST /posts/generate (id = original)
         return {
             "batch_id": updated_artifact.batch_id,
             "artifacts": [
                 {
-                    "id": updated_artifact.id,
+                    "id": updated_artifact.parent_artifact_id or updated_artifact.id,
                     "platform": updated_artifact.platform,
                     "content": updated_artifact.content,
                     "status": updated_artifact.status,
@@ -311,6 +309,57 @@ def _extract_content(result: dict) -> dict:
     return content
 
 
+@router.get("/{artifact_id}/versions")
+async def get_artifact_versions(
+    artifact_id: str,
+    user_id: str = Depends(get_user_id),
+) -> dict:
+    """
+    Get version history for an artifact.
+
+    Returns all versions ordered by created_at, including the original as version 0.
+    Each version includes content, source, prompt, diff, message_id, and created_at.
+    """
+    try:
+        artifact = await artifact_service.get_artifact(artifact_id)
+        if not artifact:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+        # Resolve original ID
+        original_id = artifact.parent_artifact_id or artifact.id
+        original = artifact if artifact.parent_artifact_id is None else await artifact_service.get_artifact(original_id)
+
+        if not original or original.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        versions = await artifact_service.get_artifact_versions(original_id)
+
+        version_list = []
+        for i, v in enumerate(versions):
+            entry = {
+                "version": i,
+                "version_id": v.id,
+                "content": v.content,
+                "edit_diff": v.edit_diff,
+                "message_id": v.message_id,
+                "created_at": v.created_at.isoformat() if v.created_at else None,
+            }
+            version_list.append(entry)
+
+        return {
+            "artifact_id": original_id,
+            "versions": version_list,
+            "current_version": len(version_list) - 1,
+            "total_versions": len(version_list),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get versions", error=str(e), artifact_id=artifact_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/batch/{batch_id}")
 async def get_artifact_batch(
     batch_id: str,
@@ -335,12 +384,16 @@ async def get_artifact_batch(
         if batch.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
-        # Get all artifacts in batch
-        artifacts = await artifact_service.get_batch_artifacts(batch_id)
+        # Get original artifacts in batch, resolve latest content for each
+        originals = await artifact_service.get_batch_artifacts(batch_id)
+        resolved = []
+        for a in originals:
+            current = await artifact_service.get_current_artifact(a.id)
+            resolved.append((current or a).to_dict())
 
         return {
             **batch.to_dict(),
-            "artifacts": [a.to_dict() for a in artifacts],
+            "artifacts": resolved,
         }
 
     except HTTPException:
@@ -380,13 +433,17 @@ async def list_conversation_artifacts(
             limit=limit,
         )
 
-        # Filter to only this user's artifacts
+        # Filter to only this user's artifacts, resolve latest content
         artifacts = [a for a in artifacts if a.user_id == user_id]
+        resolved = []
+        for a in artifacts:
+            current = await artifact_service.get_current_artifact(a.id)
+            resolved.append((current or a).to_dict())
 
         return {
             "conversation_id": conversation_id,
-            "artifacts": [a.to_dict() for a in artifacts],
-            "total": len(artifacts),
+            "artifacts": resolved,
+            "total": len(resolved),
         }
 
     except HTTPException:

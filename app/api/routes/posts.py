@@ -108,7 +108,7 @@ async def _persist_all(
                 completed_at=datetime.now(timezone.utc),
             ))
 
-            # 3. Create all artifacts
+            # 3. Create all artifacts (originals, parent_artifact_id=None)
             for data in artifacts_data:
                 session.add(Artifact(
                     id=data["id"],
@@ -118,7 +118,7 @@ async def _persist_all(
                     artifact_type="social_post",
                     platform=data["platform"],
                     content=data["content"],
-                    original_content=data["content"],  # snapshot for brain
+                    parent_artifact_id=None,
                     status=ArtifactStatus.DRAFT.value,
                     generation_metadata=data["metadata"],
                 ))
@@ -320,8 +320,8 @@ async def generate_image(
         prompt=request.prompt[:200],
     )
 
-    # Verify artifact exists
-    artifact = await artifact_service.get_artifact(artifact_id)
+    # Verify artifact exists (resolve to current version)
+    artifact = await artifact_service.get_current_artifact(artifact_id)
     if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
 
@@ -340,15 +340,15 @@ async def generate_image(
 
     image_url = image_result["url"]
 
-    # Update the artifact's content with the image URL and prompt
-    updated_content = {
-        **(artifact.content or {}),
-        "image_url": image_url,
-        "image_prompt": request.prompt,
-    }
-    await artifact_service.update_artifact(
+    # Create a version row with the image update
+    await artifact_service.create_artifact_version(
         artifact_id=artifact_id,
-        content=updated_content,
+        updates={
+            "image_url": image_url,
+            "image_prompt": request.prompt,
+        },
+        source="image_generation",
+        prompt=request.prompt,
     )
 
     return GenerateImageResponse(
@@ -368,7 +368,7 @@ async def regenerate_image(
     Regenerate an artifact's image with improvement instructions.
 
     Combines the original image prompt with the user's improvement prompt
-    and generates a new image. Tracks the change in edit_history.
+    and generates a new image. Creates a new version row with edit_diff.
     """
     logger.info(
         "========== POST /posts/{artifact_id}/regenerate-image ==========",
@@ -377,7 +377,7 @@ async def regenerate_image(
         prompt=request.prompt[:200],
     )
 
-    artifact = await artifact_service.get_artifact(artifact_id)
+    artifact = await artifact_service.get_current_artifact(artifact_id)
     if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
 
@@ -406,7 +406,7 @@ async def regenerate_image(
 
     image_url = image_result["url"]
 
-    # Update artifact via update_artifact_content to track in edit_history
+    # Update artifact via update_artifact_content — creates a version row
     await artifact_service.update_artifact_content(
         artifact_id=artifact_id,
         updates={

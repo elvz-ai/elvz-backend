@@ -516,7 +516,7 @@ async def _persist_artifacts_to_db(state: dict) -> None:
                 artifact_type=artifact.get("artifact_type", "social_post"),
                 platform=artifact.get("platform"),
                 content=artifact_content,
-                original_content=artifact_content,  # snapshot for brain
+                parent_artifact_id=None,  # original artifact
                 status=ArtifactStatus.DRAFT.value,
                 generation_metadata={
                     "tokens_used": artifact.get("tokens_used", 0),

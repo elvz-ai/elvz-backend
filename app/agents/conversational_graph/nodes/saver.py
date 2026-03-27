@@ -53,6 +53,9 @@ class MemorySaverNode:
             # 1. Update working memory
             await self._save_working_memory(state)
 
+            # 1.5. Persist pending_modification to conversation metadata
+            await self._save_pending_modification(state, conversation_id)
+
             # 2. Save assistant message (if we have a response)
             if state.get("final_response"):
                 await self._save_message(state)
@@ -132,14 +135,9 @@ class MemorySaverNode:
                 q.get("platform")
                 for q in state.get("decomposed_queries", [])
             ],
-            # Artifact tracking
+            # Artifact tracking (artifacts + pending_modification now persisted via PostgreSQL)
             "last_batch_id": state.get("artifact_batch_id"),
             "artifact_count": len(state.get("artifacts", [])),
-            "last_artifact": state.get("last_artifact"),  # Persist for cross-turn modification
-            # Artifact history ring buffer (for multi-artifact modification resolution)
-            "artifact_history": state.get("artifact_history", []),
-            # Pending modification context (survives across turns for follow-up flow)
-            "pending_modification": state.get("pending_modification"),
             # Pending HITL requirements (survives across turns for clarification resumption)
             "pending_requirements": (state.get("working_memory") or {}).get("pending_requirements"),
             # Context
@@ -153,6 +151,25 @@ class MemorySaverNode:
             memory_update,
             merge=True,
         )
+
+    async def _save_pending_modification(self, state: ConversationState, conversation_id: str) -> None:
+        """Persist pending_modification to conversation metadata (PostgreSQL)."""
+        pending = state.get("pending_modification")
+        try:
+            from app.services.conversation_service import conversation_service
+
+            conversation = await conversation_service.get_conversation(conversation_id)
+            if conversation:
+                meta = dict(conversation.extra_metadata or {})
+                if pending:
+                    meta["pending_modification"] = pending
+                elif "pending_modification" in meta:
+                    del meta["pending_modification"]
+                await conversation_service.update_conversation(
+                    conversation_id, state["user_id"], metadata=meta
+                )
+        except Exception as e:
+            logger.warning("Failed to persist pending_modification", error=str(e))
 
     def _append_to_artifact_history(self, state: ConversationState) -> None:
         """Append newly generated artifacts to the history ring buffer."""

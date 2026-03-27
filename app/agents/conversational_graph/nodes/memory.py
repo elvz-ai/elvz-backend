@@ -54,17 +54,42 @@ class MemoryRetrieverNode:
             working_memory = await memory_manager.get_working_memory(conversation_id)
             state["working_memory"].update(working_memory)
 
-            # Restore last_artifact from working memory for cross-turn modification support
-            if not state.get("last_artifact") and working_memory.get("last_artifact"):
-                state["last_artifact"] = working_memory["last_artifact"]
+            # Restore artifact_history & last_artifact from PostgreSQL
+            # (replaces Redis — survives TTL expiry, restarts, guardrail-blocked turns)
+            if not state.get("artifact_history"):
+                try:
+                    from app.services.artifact_service import artifact_service
+                    from app.core.config import settings
 
-            # Restore artifact_history from working memory
-            if not state.get("artifact_history") and working_memory.get("artifact_history"):
-                state["artifact_history"] = working_memory["artifact_history"]
+                    db_artifacts = await artifact_service.list_artifacts(
+                        conversation_id=conversation_id,
+                        limit=settings.artifact_history_max_size,
+                    )
+                    if db_artifacts:
+                        db_artifacts.reverse()  # chronological order (oldest first)
+                        history = []
+                        for a in db_artifacts:
+                            d = a.to_dict()
+                            text = ((d.get("content") or {}).get("text") or "")
+                            d["topic_summary"] = text[:80] if text else "untitled"
+                            history.append(d)
+                        state["artifact_history"] = history
+                        state["last_artifact"] = history[-1]
+                except Exception as e:
+                    logger.warning("Failed to hydrate artifacts from DB", error=str(e))
 
-            # Restore pending_modification context (user was asked "which artifact?")
-            if working_memory.get("pending_modification"):
-                state["pending_modification"] = working_memory["pending_modification"]
+            # Restore pending_modification from conversation metadata
+            try:
+                from app.services.conversation_service import conversation_service
+
+                conversation = await conversation_service.get_conversation(conversation_id)
+                if conversation:
+                    conv_meta = conversation.extra_metadata or {}
+                    pending = conv_meta.get("pending_modification")
+                    if pending and pending.get("pending"):
+                        state["pending_modification"] = pending
+            except Exception as e:
+                logger.warning("Failed to restore pending_modification from DB", error=str(e))
 
             logger.info(
                 "Memory Layer 1 - Working Memory loaded",

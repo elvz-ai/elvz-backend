@@ -145,6 +145,12 @@ class Artifact(Base):
     artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)
     platform: Mapped[Optional[str]] = mapped_column(String(50), index=True)
 
+    # Parent-child versioning: links version rows to the original artifact
+    # parent_artifact_id IS NULL → original, IS NOT NULL → version row
+    parent_artifact_id: Mapped[Optional[str]] = mapped_column(
+        Text, ForeignKey("artifacts.id", ondelete="CASCADE"), index=True
+    )
+
     # Content - structure depends on artifact_type
     content: Mapped[dict] = mapped_column(JSONB, nullable=False)
     # For social_post:
@@ -164,18 +170,13 @@ class Artifact(Base):
         String(50), default=ArtifactStatus.DRAFT.value, nullable=False
     )
 
-    # Original AI-generated content (set once at creation, never changes)
-    # Used by the brain to compare AI output vs user-edited final version
-    original_content: Mapped[Optional[dict]] = mapped_column(JSONB)
-
-    # Edit history as append-only array of objects, ordered by `at`
-    # [{"diff": {...}, "after_edit": {...}, "source": "user_edit", "at": "..."}, ...]
-    edit_history: Mapped[list] = mapped_column(JSONB, default=list)
+    # Plain-text diff describing what changed from the parent version
+    # NULL for original artifacts
+    edit_diff: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # User feedback
     user_rating: Mapped[Optional[int]] = mapped_column()  # 1-5 stars
     user_feedback: Mapped[Optional[str]] = mapped_column(Text)
-    was_edited: Mapped[bool] = mapped_column(default=False)
     was_published: Mapped[bool] = mapped_column(default=False)
 
     # Generation metadata
@@ -205,6 +206,21 @@ class Artifact(Base):
     message: Mapped[Optional["Message"]] = relationship("Message")
     batch: Mapped[Optional["ArtifactBatch"]] = relationship("ArtifactBatch", back_populates="artifacts")
 
+    # Self-referential: parent/versions for artifact versioning
+    parent: Mapped[Optional["Artifact"]] = relationship(
+        "Artifact",
+        remote_side="Artifact.id",
+        back_populates="versions",
+        foreign_keys=[parent_artifact_id],
+    )
+    versions: Mapped[list["Artifact"]] = relationship(
+        "Artifact",
+        back_populates="parent",
+        foreign_keys=[parent_artifact_id],
+        order_by="Artifact.created_at.asc()",
+        cascade="all, delete-orphan",
+    )
+
     # Indexes
     __table_args__ = (
         Index("idx_artifacts_type_platform", "artifact_type", "platform"),
@@ -216,18 +232,24 @@ class Artifact(Base):
         return f"<Artifact(id={self.id}, type={self.artifact_type}, platform={self.platform})>"
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for API responses."""
+        """Convert to dictionary for API responses.
+
+        Always returns the original artifact ID as "id" for frontend stability.
+        The actual row ID is in "version_id".
+        """
         return {
-            "id": self.id,
+            "id": self.parent_artifact_id or self.id,  # always original ID
+            "version_id": self.id,
+            "parent_artifact_id": self.parent_artifact_id,
             "conversation_id": self.conversation_id,
             "batch_id": self.batch_id,
             "artifact_type": self.artifact_type,
             "platform": self.platform,
             "content": self.content,
-            "original_content": self.original_content,
             "status": self.status,
+            "edit_diff": self.edit_diff,
             "user_rating": self.user_rating,
-            "was_edited": self.was_edited,
+            "was_edited": self.parent_artifact_id is not None,
             "was_published": self.was_published,
             "generation_metadata": self.generation_metadata,
             "created_at": self.created_at.isoformat() if self.created_at else None,
