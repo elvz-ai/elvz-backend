@@ -430,6 +430,19 @@ async def _background_post_response(
         logger.error("Background memory save failed", error=str(e))
 
     try:
+        # 1.25. Backfill message_id on modified artifact versions
+        # (version rows are created with message_id=NULL during modifier, then
+        # stamped here after the saver creates the message row in the messages table)
+        message_id = result.get("current_message_id")
+        last_artifact = result.get("last_artifact")
+        if message_id and last_artifact:
+            original_id = last_artifact.get("id") if isinstance(last_artifact, dict) else None
+            if original_id:
+                await _backfill_artifact_message_id(original_id, message_id)
+    except Exception as e:
+        logger.error("Background message_id backfill failed", error=str(e))
+
+    try:
         # 1.5. Persist artifacts to PostgreSQL (artifacts + artifact_batches tables)
         await _persist_artifacts_to_db(result)
     except Exception as e:
@@ -462,6 +475,27 @@ async def _background_post_response(
         )
     except Exception as e:
         logger.error("Background execution log failed", error=str(e))
+
+
+async def _backfill_artifact_message_id(artifact_id: str, message_id: str) -> None:
+    """Set message_id on version rows that were created without one (during modifier)."""
+    from app.core.database import get_db_context
+    from app.models.artifact import Artifact
+    from sqlalchemy import update
+
+    async with get_db_context() as session:
+        await session.execute(
+            update(Artifact)
+            .where(Artifact.parent_artifact_id == artifact_id)
+            .where(Artifact.message_id.is_(None))
+            .values(message_id=message_id)
+        )
+
+    logger.info(
+        "Backfilled message_id on artifact versions",
+        artifact_id=artifact_id,
+        message_id=message_id,
+    )
 
 
 async def _persist_artifacts_to_db(state: dict) -> None:
@@ -505,8 +539,12 @@ async def _persist_artifacts_to_db(state: dict) -> None:
         ))
 
         # 3. Create artifact rows
+        final_response = state.get("final_response")
         for artifact in artifacts:
             artifact_content = artifact.get("content", {})
+            # Only set description if not already set by ContentAgent
+            if not artifact_content.get("description") and final_response:
+                artifact_content["description"] = final_response
             session.add(Artifact(
                 id=artifact.get("id"),
                 user_id=user_id,

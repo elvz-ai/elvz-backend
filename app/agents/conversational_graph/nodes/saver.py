@@ -233,6 +233,7 @@ class MemorySaverNode:
             role="assistant",
             content=response,
             metadata=metadata,
+            message_id=state.get("current_message_id"),
         )
         state["current_message_id"] = message_id
 

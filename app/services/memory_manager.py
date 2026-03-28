@@ -395,6 +395,7 @@ class MemoryManager:
         content: str,
         metadata: Optional[dict] = None,
         db: Optional[AsyncSession] = None,
+        message_id: Optional[str] = None,
     ) -> str:
         """
         Save a message to short-term memory (PostgreSQL).
@@ -405,13 +406,14 @@ class MemoryManager:
             content: Message content
             metadata: Optional metadata
             db: Optional database session
+            message_id: Optional pre-generated message ID (reused if provided)
 
         Returns:
             Message ID
         """
         import uuid
 
-        message_id = str(uuid.uuid4())
+        message_id = message_id or str(uuid.uuid4())
 
         async def _save(session: AsyncSession) -> str:
             message = Message(

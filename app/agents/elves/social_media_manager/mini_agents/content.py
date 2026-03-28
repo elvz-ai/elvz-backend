@@ -92,7 +92,8 @@ Respond with valid JSON:
     "hook": "The attention-grabbing first line",
     "cta": "The call-to-action used",
     "target_audience": "Who this content is for",
-    "tone": "The tone used (e.g., professional, conversational)"
+    "tone": "The tone used (e.g., professional, conversational)",
+    "response_message": "A brief, friendly 1-2 sentence description of what you created. Be conversational and natural. Do NOT include the post content itself."
 }}"""
 
 

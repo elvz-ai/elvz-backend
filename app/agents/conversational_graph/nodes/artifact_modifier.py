@@ -16,8 +16,8 @@ Tools:
 
 import json
 import time
+import uuid
 from dataclasses import dataclass
-from typing import Optional
 
 import structlog
 
@@ -574,6 +574,10 @@ class ArtifactModifierNode:
                 self._trace(state, start_time, "artifact_not_found")
                 return state
 
+            # Pre-generate message_id so all version rows link to the same assistant message
+            message_id = str(uuid.uuid4())
+            state["current_message_id"] = message_id
+
             # ── DEBUG: Print loaded artifact details ──
             loaded_content = _safe_content(artifact)
             print("\n" + "-" * 80)
@@ -651,6 +655,17 @@ class ArtifactModifierNode:
             original_id = target["id"]  # always the original ID from state
             updated_artifact = await artifact_service.get_current_artifact(original_id)
             if updated_artifact:
+                # Store description in artifact content
+                response_message = state["final_response"]
+                if response_message:
+                    await artifact_service.update_artifact_content(
+                        artifact_id=updated_artifact.id,
+                        updates={"description": response_message},
+                        source="system",
+                    )
+                    # Re-fetch to get the latest version with description
+                    updated_artifact = await artifact_service.get_current_artifact(original_id)
+
                 artifact_dict = updated_artifact.to_dict()
                 state["artifacts"] = [artifact_dict]
                 state["last_artifact"] = artifact_dict

@@ -427,6 +427,9 @@ class MultiPlatformOrchestratorNode:
             ]
             content["schedule"] = variation.get("posting_schedule") or {}
             content["visual_recommendations"] = variation.get("visual_recommendations", [])
+            # Thread response_message from ContentAgent as description
+            if raw_content.get("response_message"):
+                content["description"] = raw_content["response_message"]
             return content
 
         # Fallback: direct keys at result root

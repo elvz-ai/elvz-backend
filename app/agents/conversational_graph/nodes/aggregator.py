@@ -59,6 +59,15 @@ class StreamAggregatorNode:
             # Add artifact info if present
             artifacts = state.get("artifacts", [])
             if artifacts:
+                # Inject description into artifact content for SSE events
+                # Only set if not already present (ContentAgent sets it during generation)
+                final_resp = state.get("final_response") or ""
+                for a in artifacts:
+                    content = a.get("content") or {}
+                    if not content.get("description") and final_resp:
+                        content["description"] = final_resp
+                    a["content"] = content
+
                 metadata["artifact_count"] = len(artifacts)
                 metadata["batch_id"] = state.get("artifact_batch_id")
                 metadata["platforms"] = [a.get("platform") for a in artifacts]
