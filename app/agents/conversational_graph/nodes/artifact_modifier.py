@@ -168,10 +168,7 @@ class ToolExecutor:
         artifact,
         user_id: str,
     ) -> list[ToolResult]:
-        """Execute tool calls sequentially (order matters for compound edits)."""
-        # Track original ID for refresh — artifact may become a version row after first tool
-        original_id = artifact.parent_artifact_id or artifact.id
-
+        """Execute tool calls sequentially. Updates are collected, not persisted."""
         results = []
         for call in tool_calls:
             if not isinstance(call, dict):
@@ -183,12 +180,6 @@ class ToolExecutor:
 
             result = await self._execute_single(tool_name, params, artifact, user_id)
             results.append(result)
-
-            # Refresh to latest version after each tool
-            if result.success:
-                refreshed = await artifact_service.get_current_artifact(original_id)
-                if refreshed:
-                    artifact = refreshed
 
         return results
 
@@ -268,13 +259,6 @@ class ToolExecutor:
             if content.get("cta"):
                 updates["cta"] = content["cta"]
 
-        await artifact_service.update_artifact_content(
-            artifact_id=artifact.id,
-            updates=updates,
-            source="regeneration",
-            prompt=prompt,
-        )
-
         # Use ContentAgent's natural response_message if available
         response_msg = ""
         if isinstance(content, dict):
@@ -287,12 +271,6 @@ class ToolExecutor:
         explicit_hashtags = params.get("hashtags")
 
         if explicit_hashtags and isinstance(explicit_hashtags, list):
-            # Direct update with explicit values
-            await artifact_service.update_artifact_content(
-                artifact_id=artifact.id,
-                updates={"hashtags": explicit_hashtags},
-                source="user_edit",
-            )
             return ToolResult(
                 tool_name="update_hashtags", success=True,
                 message=f"Updated hashtags to {', '.join(explicit_hashtags)}",
@@ -338,13 +316,6 @@ class ToolExecutor:
             if not normalized:
                 return ToolResult(tool_name="update_hashtags", success=False, error="No hashtags generated")
 
-            await artifact_service.update_artifact_content(
-                artifact_id=artifact.id,
-                updates={"hashtags": normalized},
-                source="regeneration",
-                prompt=prompt,
-            )
-
             return ToolResult(
                 tool_name="update_hashtags", success=True,
                 message=f"Updated hashtags: {', '.join(normalized)}",
@@ -377,16 +348,10 @@ class ToolExecutor:
             if isinstance(schedule, str):
                 schedule = {"datetime": schedule, "reason": prompt}
 
-            await artifact_service.update_artifact_content(
-                artifact_id=artifact.id,
-                updates={"schedule": schedule, "posting_schedule": schedule},
-                source="user_edit",
-            )
-
             return ToolResult(
                 tool_name="update_schedule", success=True,
                 message=f"Updated schedule: {(schedule.get('datetime') or prompt) if isinstance(schedule, dict) else prompt}",
-                updates={"schedule": schedule},
+                updates={"schedule": schedule, "posting_schedule": schedule},
             )
         except Exception as e:
             return ToolResult(tool_name="update_schedule", success=False, error=str(e))
@@ -404,6 +369,7 @@ class ToolExecutor:
             description=combined_prompt,
             style="Professional, high-quality social media visual",
             dimensions="1200 x 630",
+            source_image_url=current_content.get("image_url"),
         )
 
         if not image_result or not image_result.get("url"):
@@ -413,13 +379,6 @@ class ToolExecutor:
             "image_url": image_result["url"],
             "image_prompt": combined_prompt,
         }
-
-        await artifact_service.update_artifact_content(
-            artifact_id=artifact.id,
-            updates=updates,
-            source="image_regeneration",
-            prompt=prompt,
-        )
 
         return ToolResult(
             tool_name="regenerate_image", success=True,
@@ -446,13 +405,6 @@ class ToolExecutor:
             "image_prompt": prompt,
         }
 
-        await artifact_service.update_artifact_content(
-            artifact_id=artifact.id,
-            updates=updates,
-            source="image_regeneration",
-            prompt=prompt,
-        )
-
         return ToolResult(
             tool_name="generate_image", success=True,
             message="Generated new image",
@@ -468,12 +420,6 @@ class ToolExecutor:
 
         if not updates:
             return ToolResult(tool_name="direct_edit", success=False, error="No fields to update")
-
-        await artifact_service.update_artifact_content(
-            artifact_id=artifact.id,
-            updates=updates,
-            source="user_edit",
-        )
 
         fields = list(updates.keys())
         return ToolResult(
@@ -651,27 +597,30 @@ class ArtifactModifierNode:
             # 6. Build response
             state["final_response"] = self._build_response(results, planning_response)
 
-            # 7. Refresh artifact (latest version) and put in state
-            original_id = target["id"]  # always the original ID from state
+            # 7. Merge all successful tool updates + description into one update
+            merged_updates = {}
+            for r in results:
+                if r.success and r.updates:
+                    merged_updates.update(r.updates)
+            if state.get("final_response"):
+                merged_updates["description"] = state["final_response"]
+
+            # 8. Single DB persist — one version row for the entire modification turn
+            original_id = target["id"]
+            if merged_updates:
+                await artifact_service.update_artifact_content(
+                    artifact_id=original_id,
+                    updates=merged_updates,
+                    source="modification",
+                )
+
+            # 9. Refresh artifact and put in state
             updated_artifact = await artifact_service.get_current_artifact(original_id)
             if updated_artifact:
-                # Store description in artifact content
-                response_message = state["final_response"]
-                if response_message:
-                    await artifact_service.update_artifact_content(
-                        artifact_id=updated_artifact.id,
-                        updates={"description": response_message},
-                        source="system",
-                    )
-                    # Re-fetch to get the latest version with description
-                    updated_artifact = await artifact_service.get_current_artifact(original_id)
-
                 artifact_dict = updated_artifact.to_dict()
                 state["artifacts"] = [artifact_dict]
                 state["last_artifact"] = artifact_dict
-                # Push artifact event for SSE streaming
                 add_stream_event(state, "artifact_updated", content=artifact_dict, node="artifact_modifier")
-                # Update artifact_history
                 history = list(state.get("artifact_history") or [])
                 for i, entry in enumerate(history):
                     if entry.get("id") == artifact_dict.get("id"):

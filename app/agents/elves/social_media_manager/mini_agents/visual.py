@@ -260,6 +260,7 @@ class VisualAgent:
         description: str,
         style: str,
         dimensions: str,
+        source_image_url: Optional[str] = None,
     ) -> Optional[dict]:
         """
         Generate actual image using the description.
@@ -294,9 +295,18 @@ Create a visually appealing, professional image that matches this description.""
             # Use OpenRouter client directly to access raw response
             openrouter_client = llm_client.openrouter.client
 
+            # Build message: multimodal (image + text) for edits, text-only for generation
+            if source_image_url:
+                message_content = [
+                    {"type": "image_url", "image_url": {"url": source_image_url}},
+                    {"type": "text", "text": image_prompt},
+                ]
+            else:
+                message_content = image_prompt
+
             request_params = {
                 "model": config.model,
-                "messages": [{"role": "user", "content": image_prompt}],
+                "messages": [{"role": "user", "content": message_content}],
                 "extra_headers": llm_client.openrouter.extra_headers,
                 "extra_body": {
                     "models": config.fallbacks,
