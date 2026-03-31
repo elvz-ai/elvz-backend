@@ -29,6 +29,7 @@ class TaskType(str, Enum):
     TIMING_OPTIMIZATION = "timing_optimization"
     VISUAL_DESCRIPTION = "visual_description"
     IMAGE_GENERATION = "image_generation"
+    IMAGE_EDITING = "image_editing"
 
     # SEO tasks
     SEO_ANALYSIS = "seo_analysis"
@@ -116,6 +117,15 @@ MODEL_CONFIG: dict[str, ModelConfig] = {
     TaskType.IMAGE_GENERATION: ModelConfig(
         model="google/gemini-2.5-flash-image",
         fallbacks=["bytedance-seed/seedream-4.5"],
+        temperature=0.7,
+        max_tokens=1000,
+    ),
+
+    # --- Image Editing ---
+    # Model for editing existing images with instructions
+    TaskType.IMAGE_EDITING: ModelConfig(
+        model="google/gemini-3.1-flash-image-preview",
+        fallbacks=["google/gemini-2.5-flash-image"],
         temperature=0.7,
         max_tokens=1000,
     ),

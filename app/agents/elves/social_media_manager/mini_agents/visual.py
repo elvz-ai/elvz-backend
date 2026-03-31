@@ -255,6 +255,19 @@ class VisualAgent:
                 "generation_status": "description_only",
             }
 
+    async def _url_to_base64(self, url: str) -> str:
+        """Download image from URL and convert to base64 data URL."""
+        import aiohttp
+        import base64
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                image_bytes = await resp.read()
+                content_type = resp.content_type or "image/png"
+
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        return f"data:{content_type};base64,{b64}"
+
     async def _generate_image(
         self,
         description: str,
@@ -274,35 +287,33 @@ class VisualAgent:
             Dictionary with image URL or None if generation fails
         """
         try:
-            # Build the image generation prompt
-            image_prompt = f"""Generate a high-quality social media image with the following specifications:
+            from app.core.model_config import TaskType, get_model_config
+
+            # Use OpenRouter client directly to access raw response
+            openrouter_client = llm_client.openrouter.client
+
+            if source_image_url:
+                # IMAGE EDITING mode — send original image + edit instruction
+                config = get_model_config(TaskType.IMAGE_EDITING)
+                edit_prompt = f"Edit this image: {description}"
+
+                base64_data_url = await self._url_to_base64(source_image_url)
+                message_content = [
+                    {"type": "image_url", "image_url": {"url": base64_data_url}},
+                    {"type": "text", "text": edit_prompt},
+                ]
+                logger.debug("Requesting image editing", prompt_length=len(edit_prompt))
+            else:
+                # IMAGE GENERATION mode — text-only prompt
+                config = get_model_config(TaskType.IMAGE_GENERATION)
+                message_content = f"""Generate a high-quality social media image with the following specifications:
 
 Description: {description}
 Style: {style}
 Dimensions: {dimensions}
 
 Create a visually appealing, professional image that matches this description."""
-
-            from app.core.model_config import TaskType, get_model_config
-            from app.core.config import settings
-
-            # Get model config for image generation
-            config = get_model_config(TaskType.IMAGE_GENERATION)
-
-            # Call OpenRouter directly with proper parameters for image generation
-            logger.debug("Requesting image generation", prompt_length=len(image_prompt))
-
-            # Use OpenRouter client directly to access raw response
-            openrouter_client = llm_client.openrouter.client
-
-            # Build message: multimodal (image + text) for edits, text-only for generation
-            if source_image_url:
-                message_content = [
-                    {"type": "image_url", "image_url": {"url": source_image_url}},
-                    {"type": "text", "text": image_prompt},
-                ]
-            else:
-                message_content = image_prompt
+                logger.debug("Requesting image generation", prompt_length=len(message_content))
 
             request_params = {
                 "model": config.model,

@@ -69,17 +69,10 @@ MODIFICATION_TOOLS = [
         },
     },
     {
-        "name": "regenerate_image",
-        "description": "Regenerate or improve the post's existing image. Use when the user wants to modify the current image.",
+        "name": "update_image",
+        "description": "Generate or edit the post's image. If the post already has an image, it will be edited based on the instruction. If no image exists, a new one is created.",
         "parameters": {
-            "prompt": "string (required) — instruction for image modification (e.g., 'make it brighter', 'add watermark')",
-        },
-    },
-    {
-        "name": "generate_image",
-        "description": "Generate a new AI image for the post from scratch. Use when the post has no image and user wants one.",
-        "parameters": {
-            "prompt": "string (required) — description of what image to generate",
+            "prompt": "string (required) — instruction for the image (e.g., 'change theme to red', 'add a sunset background', 'create an infographic')",
         },
     },
     {
@@ -119,7 +112,7 @@ Rules:
 - If user gives explicit values (e.g., "change hashtags to #AI #ML"), use direct_edit
 - If user wants AI-driven changes (e.g., "better hashtags"), use the AI tool (update_hashtags with prompt)
 - For text rewrites, use update_text
-- For image changes, use regenerate_image (if image exists) or generate_image (if no image)
+- For image changes, use update_image. Pass the user's instruction exactly as they wrote it — do NOT elaborate or describe the image content
 - Always return valid JSON
 
 Return JSON with tool calls and a friendly response message:
@@ -195,8 +188,7 @@ class ToolExecutor:
             "update_text": self._execute_update_text,
             "update_hashtags": self._execute_update_hashtags,
             "update_schedule": self._execute_update_schedule,
-            "regenerate_image": self._execute_regenerate_image,
-            "generate_image": self._execute_generate_image,
+            "update_image": self._execute_update_image,
             "direct_edit": self._execute_direct_edit,
         }.get(tool_name)
 
@@ -356,58 +348,39 @@ class ToolExecutor:
         except Exception as e:
             return ToolResult(tool_name="update_schedule", success=False, error=str(e))
 
-    async def _execute_regenerate_image(self, params: dict, artifact, user_id: str) -> ToolResult:
-        """Regenerate image with improvement instructions."""
+    async def _execute_update_image(self, params: dict, artifact, user_id: str) -> ToolResult:
+        """Generate or edit the post's image. Sends existing image for editing if available."""
         prompt = params.get("prompt", "")
         current_content = _safe_content(artifact)
-        original_prompt = current_content.get("image_prompt") or ""
-
-        combined_prompt = f"{original_prompt}. Improvement: {prompt}" if original_prompt else prompt
-
-        visual_agent = await self._get_visual_agent()
-        image_result = await visual_agent._generate_image(
-            description=combined_prompt,
-            style="Professional, high-quality social media visual",
-            dimensions="1200 x 630",
-            source_image_url=current_content.get("image_url"),
-        )
-
-        if not image_result or not image_result.get("url"):
-            return ToolResult(tool_name="regenerate_image", success=False, error="Image generation failed")
-
-        updates = {
-            "image_url": image_result["url"],
-            "image_prompt": combined_prompt,
-        }
-
-        return ToolResult(
-            tool_name="regenerate_image", success=True,
-            message="Regenerated image",
-            updates=updates,
-        )
-
-    async def _execute_generate_image(self, params: dict, artifact, user_id: str) -> ToolResult:
-        """Generate a fresh image from scratch."""
-        prompt = params.get("prompt", "")
+        existing_image_url = current_content.get("image_url")
+        if not existing_image_url:
+            # Fallback: check visual_recommendations
+            recs = current_content.get("visual_recommendations") or []
+            for rec in recs:
+                if isinstance(rec, dict) and rec.get("image_url"):
+                    existing_image_url = rec["image_url"]
+                    break
 
         visual_agent = await self._get_visual_agent()
         image_result = await visual_agent._generate_image(
             description=prompt,
             style="Professional, high-quality social media visual",
             dimensions="1200 x 630",
+            source_image_url=existing_image_url,
         )
 
         if not image_result or not image_result.get("url"):
-            return ToolResult(tool_name="generate_image", success=False, error="Image generation failed")
+            return ToolResult(tool_name="update_image", success=False, error="Image generation failed")
 
         updates = {
             "image_url": image_result["url"],
             "image_prompt": prompt,
         }
 
+        action = "Edited image" if existing_image_url else "Generated new image"
         return ToolResult(
-            tool_name="generate_image", success=True,
-            message="Generated new image",
+            tool_name="update_image", success=True,
+            message=action,
             updates=updates,
         )
 
