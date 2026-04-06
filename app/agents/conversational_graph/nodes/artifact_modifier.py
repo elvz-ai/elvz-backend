@@ -372,8 +372,30 @@ class ToolExecutor:
         if not image_result or not image_result.get("url"):
             return ToolResult(tool_name="update_image", success=False, error="Image generation failed")
 
+        new_image_url = image_result["url"]
+
+        # Build merged visual_recommendations: update the first image entry in place,
+        # or create one if none exists. This is where the original artifact stores the
+        # image, and where the frontend reads it from.
+        existing_recs = list(current_content.get("visual_recommendations") or [])
+        updated = False
+        for i, rec in enumerate(existing_recs):
+            if isinstance(rec, dict) and (rec.get("image_url") or rec.get("image_prompt")):
+                existing_recs[i] = {
+                    **rec,
+                    "image_url": new_image_url,
+                    "image_prompt": prompt,
+                }
+                updated = True
+                break
+        if not updated:
+            existing_recs.insert(0, {"image_url": new_image_url, "image_prompt": prompt})
+
         updates = {
-            "image_url": image_result["url"],
+            "visual_recommendations": existing_recs,
+            # Also keep top-level fields for backwards compatibility with any consumer
+            # that already reads from content.image_url / content.image_prompt
+            "image_url": new_image_url,
             "image_prompt": prompt,
         }
 

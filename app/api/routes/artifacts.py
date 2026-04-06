@@ -45,6 +45,17 @@ class OptimizeArtifactRequest(BaseModel):
     elf: str = Field(..., min_length=1, description="Elf agent slug")
 
 
+class ImageEditRequest(BaseModel):
+    """Request for AI image editing."""
+    image_url: str = Field(..., description="URL of the image to edit")
+    prompt: str = Field(..., min_length=1, max_length=2000, description="Edit instruction")
+
+
+class ImageEditResponse(BaseModel):
+    """Response from image editing."""
+    image_url: str = Field(..., description="URL of the edited image")
+
+
 _content_agent = ContentAgent()
 
 
@@ -496,4 +507,37 @@ async def delete_artifact(
             error=str(e),
             artifact_id=artifact_id,
         )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/image/edit", response_model=ImageEditResponse)
+async def edit_image(
+    request: ImageEditRequest,
+    user_id: str = Depends(get_user_id),
+):
+    """Edit an image using AI based on a text prompt.
+
+    Sends the original image + edit instruction to Gemini for modification.
+    Returns a new S3 URL of the edited image.
+    """
+    try:
+        from app.agents.elves.social_media_manager.mini_agents.visual import VisualAgent
+
+        visual_agent = VisualAgent()
+        result = await visual_agent._generate_image(
+            description=request.prompt,
+            style="Professional, high-quality social media visual",
+            dimensions="1200 x 630",
+            source_image_url=request.image_url,
+        )
+
+        if not result or not result.get("url"):
+            raise HTTPException(status_code=500, detail="Image editing failed")
+
+        return ImageEditResponse(image_url=result["url"])
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Image editing failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
