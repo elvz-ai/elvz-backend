@@ -328,11 +328,14 @@ Available posts:
 {artifact_list}
 
 Generate a friendly, concise question asking which post they want to modify.
-List the options with numbers. Keep it to 2-3 sentences.
+List the options with numbers. When listing each option, quote a short phrase
+(5-8 words) from the post's actual text or include one of its hashtags so the
+user can tell them apart. Do NOT summarize the posts in your own words — use
+their actual text/hashtags. Keep the lead-in question itself to 1-2 sentences.
 
 Respond in JSON:
 {{
-    "question": "the follow-up question",
+    "question": "the follow-up question with numbered options",
     "options": ["option1", "option2"]
 }}"""
 

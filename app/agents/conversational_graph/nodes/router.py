@@ -37,14 +37,77 @@ Which post does the user want to modify? Consider:
 - Ordinal references (e.g. "the second one", "the first post")
 - Recency references (e.g. "the latest", "the last one")
 - Tone/style references (e.g. "the professional one", "the casual post")
-- If no clear reference, pick the most likely match
+
+Rules:
+- Match against the post's actual text, hashtags, and image description shown above. Do NOT rely on outside knowledge about names or entities you happen to recognize.
+- If no post clearly matches the user's reference, set confidence below 0.6 — it is better to ask the user than to guess.
 
 Respond in JSON:
 {{
     "index": <0-based index of the matching post>,
     "confidence": <0.0 to 1.0 — how sure you are>,
-    "reasoning": "<brief explanation>"
+    "reasoning": "<brief explanation citing the specific text/hashtag/image field that matched>"
 }}"""
+
+
+def _format_artifact_for_resolver(index: int, entry: dict) -> str:
+    """
+    Build a multi-line card describing one artifact for the resolver LLM.
+
+    Pulls from `entry["content"]` (already populated by hydration) so the LLM
+    can ground its decision on actual post text/hashtags/image instead of the
+    80-char `topic_summary`.
+    """
+    platform = (entry.get("platform") or "unknown").title()
+    created = entry.get("created_at", "")
+    content = entry.get("content") or {}
+
+    text = (content.get("text") or "").strip()
+    text_excerpt = text[:250] + ("…" if len(text) > 250 else "")
+
+    hashtags = content.get("hashtags") or []
+    hashtags_str = " ".join(hashtags[:8]) if hashtags else ""
+
+    image_hint = (content.get("image_prompt") or "").strip()
+    if not image_hint:
+        recs = content.get("visual_recommendations") or []
+        for rec in recs:
+            if isinstance(rec, dict) and rec.get("description"):
+                image_hint = rec["description"].strip()
+                break
+    if image_hint and len(image_hint) > 150:
+        image_hint = image_hint[:150] + "…"
+
+    lines = [f"{index}. [{platform}]  (created: {created})"]
+    if text_excerpt:
+        lines.append(f"   Text: {text_excerpt}")
+    if hashtags_str:
+        lines.append(f"   Hashtags: {hashtags_str}")
+    if image_hint:
+        lines.append(f"   Image: {image_hint}")
+    return "\n".join(lines)
+
+
+def _format_artifact_for_hitl(entry: dict) -> str:
+    """
+    Build a 2-3 sentence multi-line summary of one artifact for the HITL
+    "which one?" follow-up shown to the user.
+
+    Same source fields as the resolver but trimmed for human scanning.
+    """
+    platform = (entry.get("platform") or "unknown").title()
+    content = entry.get("content") or {}
+
+    text = (content.get("text") or "").strip()
+    text_excerpt = text[:200] + ("…" if len(text) > 200 else "")
+
+    hashtags = content.get("hashtags") or []
+    hashtags_str = " ".join(hashtags[:3]) if hashtags else ""
+
+    parts = [f'{platform} — "{text_excerpt}"' if text_excerpt else platform]
+    if hashtags_str:
+        parts.append(f"Tags: {hashtags_str}")
+    return "\n".join(parts)
 
 
 async def _resolve_artifact_llm(
@@ -63,17 +126,22 @@ async def _resolve_artifact_llm(
     if len(artifact_history) == 1:
         return artifact_history[0], 1.0, "Only one artifact in history"
 
-    # Build numbered artifact list for LLM
-    artifact_list_str = ""
-    for i, entry in enumerate(artifact_history):
-        platform = (entry.get("platform") or "unknown").title()
-        summary = entry.get("topic_summary") or "untitled"
-        created = entry.get("created_at", "")
-        artifact_list_str += f"{i}. [{platform}] {summary} (created: {created})\n"
+    # Build numbered artifact list for LLM with rich content cards
+    artifact_list_str = "\n\n".join(
+        _format_artifact_for_resolver(i, entry)
+        for i, entry in enumerate(artifact_history)
+    )
+
+    logger.debug(
+        "Artifact resolver input",
+        artifact_count=len(artifact_history),
+        user_input=user_input,
+        artifact_list=artifact_list_str,
+    )
 
     prompt = ARTIFACT_RESOLVE_PROMPT.format(
         user_input=user_input,
-        artifact_list=artifact_list_str.strip(),
+        artifact_list=artifact_list_str,
     )
 
     try:
@@ -236,7 +304,17 @@ class RouterNode:
                     )
 
                 elif len(artifact_history) > 1:
-                    # Low confidence + multiple artifacts — ask follow-up
+                    # Low confidence + multiple artifacts — ask follow-up.
+                    # Cap at 5 most recent so the question stays scannable;
+                    # tell the user when we trimmed older ones.
+                    HITL_MAX = 5
+                    recent = artifact_history[-HITL_MAX:]
+                    options = [_format_artifact_for_hitl(a) for a in recent]
+                    if len(artifact_history) > HITL_MAX:
+                        options.append(
+                            f"(showing {HITL_MAX} most recent of {len(artifact_history)})"
+                        )
+
                     state["pending_modification"] = {
                         "pending": True,
                         "original_feedback": state.get("current_input", ""),
@@ -246,10 +324,7 @@ class RouterNode:
                     state["follow_up_context"] = {
                         "missing_info": ["target_artifact"],
                         "original_query": state.get("current_input", ""),
-                        "artifact_options": [
-                            f"{a.get('platform', '').title()}: {a.get('topic_summary', 'untitled')}"
-                            for a in artifact_history
-                        ],
+                        "artifact_options": options,
                     }
                     route = "modification"
                     state["working_memory"]["route"] = route
